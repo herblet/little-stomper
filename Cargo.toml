@@ -1,0 +1,20 @@
+[package]
+name = "stomper"
+version = "0.1.0"
+authors = ["Tobias Grasl <toby@meliorbis.com>"]
+edition = "2018"
+
+[dependencies]
+tokio = { version = "^1.5", features = ["full"] }
+tokio-stream = "0.1.5"
+futures = { version = "^0.3", default-features = false, features = ["alloc"] }
+tokio-tungstenite = "^0.14"
+stomp_parser = {  path="../stomp_parser" }
+nonlocking = { path="../nonlocking" }
+log = "^0.4"
+env_logger = "^0.8"
+im = "^15.0.0"
+
+[dependencies.tungstenite]
+version = "^0.13.0"
+default-features = false
