@@ -9,7 +9,7 @@ tokio = { version = "^1.5", features = ["full"] }
 tokio-stream = "0.1.5"
 futures = { version = "^0.3", default-features = false, features = ["alloc"] }
 tokio-tungstenite = "^0.14"
-stomp_parser = {  path="../stomp_parser" }
+stomp-parser = {  path="../stomp-parser" }
 nonlocking = { path="../nonlocking" }
 log = "^0.4"
 env_logger = "^0.8"

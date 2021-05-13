@@ -739,7 +739,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "stomp_parser"
+name = "stomp-parser"
 version = "0.1.0"
 dependencies = [
  "nom 6.1.2",
@@ -756,7 +756,7 @@ dependencies = [
  "im",
  "log",
  "nonlocking",
- "stomp_parser",
+ "stomp-parser",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
