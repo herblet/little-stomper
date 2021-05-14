@@ -14,7 +14,7 @@ use asynchronous::destinations::{AsyncDestinations, DestinationType, InMemDestin
 use asynchronous::mpsc_sink::UnboundedSenderSink;
 
 use client::Client as StompClient;
-use destinations::{Destination, DestinationAction, Destinations};
+use destinations::{Destination, Destinations};
 use error::StomperError;
 
 use core::pin::Pin;

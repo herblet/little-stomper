@@ -14,7 +14,11 @@ nonlocking = { path="../nonlocking" }
 log = "^0.4"
 env_logger = "^0.8"
 im = "^15.0.0"
+uuid = { version = "^0.8.2", features = ["v4"] }
 
 [dependencies.tungstenite]
 version = "^0.13.0"
 default-features = false
+
+[dev-dependencies]
+mockall = "0.9.1"

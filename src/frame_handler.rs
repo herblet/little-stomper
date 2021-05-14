@@ -1,7 +1,12 @@
 // use futures_util::StreamExt;
-use super::{Destinations, StompClient, StomperError};
+use super::{StompClient, StomperError};
+use crate::destinations::{
+    BorrowedSender, BorrowedSubscriber, DestinationId, Destinations, InboundMessage,
+    OutboundMessage, Sender, Subscriber,
+};
 use futures::FutureExt;
 use log::info;
+use std::borrow::Borrow;
 use std::future::{ready, Future};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -14,7 +19,7 @@ pub trait FrameHandler {
         &self,
         frame: ClientFrame,
         destinations: &T,
-        client: Arc<dyn StompClient>,
+        client: Arc<dyn StompClient + 'static>,
     ) -> Pin<Box<dyn Future<Output = Result<bool, StomperError>> + Send + 'static>>;
 }
 
@@ -25,64 +30,47 @@ impl FrameHandler for FrameHandlerImpl {
         &self,
         frame: ClientFrame,
         destinations: &T,
-        client: Arc<dyn StompClient>,
+        client: Arc<dyn StompClient + 'static>,
     ) -> Pin<Box<dyn Future<Output = Result<bool, StomperError>> + Send + 'static>> {
         match frame {
-            ClientFrame::Connect(frame) => ready(
+            ClientFrame::Connect(frame) => {
                 if frame
                     .accepted_versions
                     .value()
                     .contains(&StompVersion::V1_2)
                 {
-                    let result = client.send(ServerFrame::Connected(ConnectedFrame::new(
-                        VersionValue::new(StompVersion::V1_2),
-                        None,
-                        None,
-                        None,
-                    )));
-
-                    if let Err(error) = result {
-                        client.send(ServerFrame::Error(ErrorFrame::from_message(&error.message)));
-
-                        Err(error)
-                    } else {
-                        Ok(true)
-                    }
+                    client.connect_callback(Ok(()));
                 } else {
-                    client.send(ServerFrame::Error(ErrorFrame::from_message(
-                        "Version(s) not supported. Only STOMP 1.2 is available.",
-                    )));
-                    Err(StomperError {
-                        message: format!(
+                    client.connect_callback(Err(StomperError::new(
+                        format!(
                             "Unavailable Version {:?} requested.",
                             frame.accepted_versions
-                        ),
-                    })
-                },
-            )
-            .boxed(),
+                        )
+                        .as_str(),
+                    )));
+                }
+                ready(Ok(true)).boxed()
+            }
 
-            ClientFrame::Subscribe(frame) => destinations
-                .subscribe(frame, client.clone())
-                .map(move |res| {
-                    res.map_err(|error| {
-                        client.send(ServerFrame::Error(ErrorFrame::from_message(&error.message)));
-                        error
-                    })
-                    .map(|_| true)
-                })
-                .boxed(),
+            ClientFrame::Subscribe(frame) => {
+                destinations.subscribe(
+                    DestinationId(frame.destination.value().clone()),
+                    client.clone().into_subscriber(),
+                );
+                ready(Ok(true)).boxed()
+            }
 
-            ClientFrame::Send(frame) => destinations
-                .send_message(frame)
-                .map(move |res| {
-                    res.map_err(|error| {
-                        client.send(ServerFrame::Error(ErrorFrame::from_message(&error.message)));
-                        error
-                    })
-                    .map(|_| true)
-                })
-                .boxed(),
+            ClientFrame::Send(frame) => {
+                destinations.send(
+                    DestinationId(frame.destination.value().clone()),
+                    InboundMessage {
+                        sender_message_id: "".to_owned(),
+                        body: frame.body().unwrap().to_owned(),
+                    },
+                    client.clone().into_sender(),
+                );
+                ready(Ok(true)).boxed()
+            }
 
             ClientFrame::Disconnect(frame) => {
                 info!("Client Disconnecting");

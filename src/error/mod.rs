@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 
 use stomp_parser::StompParseError;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct StomperError {
     pub message: String,
 }
