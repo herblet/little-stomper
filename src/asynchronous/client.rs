@@ -6,7 +6,6 @@ use crate::error::StomperError;
 use crate::Destinations;
 use crate::FrameHandler;
 use crate::FrameHandlerImpl;
-use crate::StompClient;
 
 use futures::{FutureExt, Sink, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::info;
@@ -32,31 +31,49 @@ impl Subscriber for AsyncStompClient {
         _: Option<SubscriptionId>,
         _: Result<SubscriptionId, StomperError>,
     ) {
-        todo!()
+        // don't really care (for now?)
+        info!("Subscribed")
     }
     fn unsubscribe_callback(
         &self,
         _: Option<SubscriptionId>,
         _: std::result::Result<SubscriptionId, StomperError>,
     ) {
-        todo!()
+        //don't really care (for now?)
+        info!("Unsubscribed")
     }
     fn send(
         &self,
         _: SubscriptionId,
-        _: Option<SubscriptionId>,
-        _: OutboundMessage,
+        client_subscription_id: Option<SubscriptionId>,
+        message: OutboundMessage,
     ) -> Result<(), StomperError> {
-        todo!()
-        // self.sender.send(frame).map_err(|_| StomperError {
-        //     message: "Unable to send".to_owned(),
-        // })
+        let raw_body = message.body;
+
+        let mut message = MessageFrame::new(
+            MessageIdValue::new(message.message_id.to_string()),
+            DestinationValue::new(message.destination.to_string()),
+            SubscriptionValue::new(
+                client_subscription_id
+                    .map(|sub_id| sub_id.to_string())
+                    .unwrap_or(String::from("unknown")),
+            ),
+            Some(ContentTypeValue::new("text/plain".to_owned())),
+            Some(ContentLengthValue::new(raw_body.len() as u32)),
+            (0, raw_body.len()),
+        );
+
+        message.set_raw(raw_body);
+
+        self.sender
+            .send(ServerFrame::Message(message))
+            .or(Err(StomperError::new("Unable to send")))
     }
 }
 
 impl Sender for AsyncStompClient {
     fn send_callback(&self, _: Option<MessageId>, _: Result<MessageId, StomperError>) {
-        todo!()
+        //don't really care (for now?)
     }
 }
 
@@ -73,15 +90,7 @@ impl Client for AsyncStompClient {
                 .map_err(|_| StomperError::new("channel error"))
         }) {
             log::error!("Error accepting client connection: {:?}", err);
-            if let Err(_) = self
-                .sender
-                .send(ServerFrame::Error(ErrorFrame::from_message(
-                    err.message.as_str(),
-                )))
-            {
-                log::error!("Error sending error: client dead?");
-                todo!() // Probably need to dispose of this client.
-            }
+            self.error(err.message.as_str());
         }
     }
 
@@ -90,6 +99,16 @@ impl Client for AsyncStompClient {
     }
     fn into_subscriber(self: Arc<Self>) -> Arc<(dyn Subscriber + 'static)> {
         self
+    }
+
+    fn error(&self, message: &str) {
+        if let Err(_) = self
+            .sender
+            .send(ServerFrame::Error(ErrorFrame::from_message(message)))
+        {
+            log::error!("Error sending error: client dead?");
+            //Probably need to dispose of this client.
+        }
     }
 }
 
@@ -139,7 +158,7 @@ where
                 handler.handle(client_frame, &destinations, client.clone())
             })
             .inspect_err(move |err| {
-                send_error_and_close(&*err_client, &format!("Websocket error: {}", err));
+                err_client.error(&format!("Websocket error: {}", err));
             })
             .try_take_while(|cont| ready(Ok(*cont)))
             .try_fold((), |_, _| ready(Ok(())));
@@ -159,60 +178,67 @@ where
     }
 }
 
-pub fn send_error_and_close(client: &dyn StompClient, text: &str) {
-    info!("Error: {}", text);
-    todo!()
-    // match client.send(ServerFrame::Error(ErrorFrame::from_message(text))) {
-    //     Ok(_) => {}
-    //     Err(some_error) => {
-    //         info!("Sending error to client failed: {}", some_error);
-    //     }
-    // }
-}
-
 #[cfg(test)]
 mod tests {
     use super::AsyncStompClient;
-    use crate::client::Client;
-    use stomp_parser::model::ErrorFrame;
+    use crate::destinations::{
+        DestinationId, MessageId, OutboundMessage, Subscriber, SubscriptionId,
+    };
     use stomp_parser::model::ServerFrame;
     use tokio::sync::mpsc;
 
-    // #[tokio::test]
-    // async fn it_calls_sender() {
-    //     let (tx, mut rx) = mpsc::unbounded_channel();
+    #[tokio::test]
+    async fn it_calls_sender() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
 
-    //     let client = AsyncStompClient::create(tx);
+        let client = AsyncStompClient::create(tx);
 
-    //     let result = client.send(ServerFrame::Error(ErrorFrame::from_message("none")));
+        let result = client.send(
+            SubscriptionId::from("Arbitrary"),
+            Some(SubscriptionId::from("sub-1")),
+            OutboundMessage {
+                message_id: MessageId::from("1"),
+                destination: DestinationId::from("somedest"),
+                body: "Hello, World".as_bytes().to_owned(),
+            },
+        );
 
-    //     if let Err(_) = result {
-    //         panic!("Send failed");
-    //     }
+        if let Err(_) = result {
+            panic!("Send failed");
+        }
 
-    //     if let Some(ServerFrame::Error(x)) = rx.recv().await {
-    //         assert_eq!("none", unsafe {
-    //             std::str::from_utf8_unchecked(x.body().unwrap_or(b"Foo"))
-    //         })
-    //     } else {
-    //         panic!("No, or incorrect, message received");
-    //     }
-    // }
+        if let Some(ServerFrame::Message(frame)) = rx.recv().await {
+            assert_eq!(
+                "Hello, World",
+                std::str::from_utf8(frame.body().unwrap()).unwrap()
+            );
+        } else {
+            panic!("No, or incorrect, message received");
+        }
+    }
 
-    // #[tokio::test]
-    // async fn returns_error_on_failure() {
-    //     let (tx, mut rx) = mpsc::unbounded_channel();
+    #[tokio::test]
+    async fn returns_error_on_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
 
-    //     let client = AsyncStompClient::create(tx);
+        let client = AsyncStompClient::create(tx);
 
-    //     rx.close();
+        rx.close();
 
-    //     let result = client.send(ServerFrame::Error(ErrorFrame::from_message("none")));
+        let result = client.send(
+            SubscriptionId::from("Arbitrary"),
+            Some(SubscriptionId::from("sub-1")),
+            OutboundMessage {
+                message_id: MessageId::from("1"),
+                destination: DestinationId::from("somedest"),
+                body: "Hello, World".as_bytes().to_owned(),
+            },
+        );
 
-    //     if let Err(error) = result {
-    //         assert_eq!("Unable to send", error.message)
-    //     } else {
-    //         panic!("No, or incorrect, error message received");
-    //     }
-    // }
+        if let Err(error) = result {
+            assert_eq!("Unable to send", error.message)
+        } else {
+            panic!("No, or incorrect, error message received");
+        }
+    }
 }

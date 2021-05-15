@@ -147,7 +147,6 @@ fn to_message(frame: ServerFrame) -> Message {
         ServerFrame::Message(frame) => Message::text(frame.to_string()),
         ServerFrame::Receipt(frame) => Message::text(frame.to_string()),
         ServerFrame::Error(frame) => Message::text(frame.to_string()),
-        _ => Message::text("Error\nUnknown Frame\n\n\x00"),
     }
 }
 

@@ -15,6 +15,7 @@ mock! {
         fn connect_callback(&self, result: Result<(), StomperError>);
         fn into_sender(self: Arc<Self>) -> Arc<dyn Sender>;
         fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
+        fn error(&self, message: &str);
     }
 
     impl Sender for TestClient {

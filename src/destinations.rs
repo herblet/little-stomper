@@ -1,8 +1,5 @@
-use crate::client::Client;
 use crate::error::StomperError;
 use std::borrow::Borrow;
-use std::sync::Arc;
-use stomp_parser::model::{SendFrame, SubscribeFrame};
 
 string_id_class!(SubscriptionId);
 
@@ -17,6 +14,7 @@ pub struct InboundMessage {
 
 #[derive(Clone)]
 pub struct OutboundMessage {
+    pub destination: DestinationId,
     pub message_id: MessageId,
     pub body: Vec<u8>,
 }

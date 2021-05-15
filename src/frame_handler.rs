@@ -1,18 +1,12 @@
 // use futures_util::StreamExt;
 use super::{StompClient, StomperError};
-use crate::destinations::{
-    BorrowedSender, BorrowedSubscriber, DestinationId, Destinations, InboundMessage,
-    OutboundMessage, Sender, Subscriber, SubscriptionId,
-};
+use crate::destinations::{DestinationId, Destinations, InboundMessage, SubscriptionId};
 use futures::FutureExt;
 use log::info;
-use std::borrow::Borrow;
 use std::future::{ready, Future};
 use std::pin::Pin;
 use std::sync::Arc;
 use stomp_parser::model::*;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{self, error::SendError, UnboundedSender};
 
 pub trait FrameHandler {
     fn handle<T: Destinations>(

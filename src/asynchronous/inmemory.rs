@@ -19,40 +19,6 @@ impl Subscription {
         (&*self.subscriber)
             .borrow()
             .send(self.id.clone(), self.subscriber_sub_id.clone(), message)
-        // let (content_length, body) = match &message.source_frame.body() {
-        //     None => (0u32, "".to_owned()),
-        //     Some(bytes) => (
-        //         bytes.len() as u32,
-        //         std::str::from_utf8(&bytes).unwrap().to_owned(),
-        //     ),
-        // };
-        // if let Some(passed_length) = &message.source_frame.content_length {
-        //     if *passed_length.value() != content_length as u32 {
-        //         log::info!(
-        //             "Strange: passed content-length {} not equal to actual length of content {}.",
-        //             passed_length,
-        //             content_length
-        //         )
-        //     }
-        // }
-
-        // let raw_body = body.as_bytes().to_owned();
-
-        // let mut message = MessageFrame::new(
-        //     MessageIdValue::new(message.message_id.clone()),
-        //     DestinationValue::new(message.source_frame.destination.value().clone()),
-        //     SubscriptionValue::new(self.id.clone()),
-        //     Some(message.source_frame.content_type.as_ref().map_or_else(
-        //         || ContentTypeValue::new("text/plain".to_owned()),
-        //         |value| value.clone(),
-        //     )),
-        //     Some(ContentLengthValue::new(content_length)),
-        //     (0, raw_body.len()),
-        // );
-
-        // message.set_raw(raw_body);
-
-        // self.client.send(ServerFrame::Message(message))
     }
 }
 
@@ -218,6 +184,7 @@ impl InMemDestinationBackend {
         let message_id = MessageId(Uuid::new_v4().to_string());
 
         let out_message = OutboundMessage {
+            destination: self.id.clone(),
             message_id: message_id.clone(),
             body: message.body,
         };
@@ -251,14 +218,6 @@ impl InMemDestination {
         InMemDestination {
             id: destination_id.clone(),
             sender,
-        }
-    }
-}
-
-impl Drop for InMemDestination {
-    fn drop(&mut self) {
-        if let Err(_) = self.sender.send(DestinationAction::Close) {
-            log::error!("Error closing destination {}.", self.id);
         }
     }
 }
