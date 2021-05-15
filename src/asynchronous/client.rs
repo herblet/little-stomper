@@ -1,5 +1,7 @@
 use crate::client::Client;
-use crate::destinations::{DestinationId, OutboundMessage, Sender, Subscriber, SubscriptionId};
+use crate::destinations::{
+    DestinationId, MessageId, OutboundMessage, Sender, Subscriber, SubscriptionId,
+};
 use crate::error::StomperError;
 use crate::Destinations;
 use crate::FrameHandler;
@@ -13,8 +15,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use stomp_parser::model::frames::client::parsers::client_frame;
-use stomp_parser::model::ErrorFrame;
-use stomp_parser::model::ServerFrame;
+use stomp_parser::model::*;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -25,17 +26,27 @@ pub struct AsyncStompClient {
 }
 
 impl Subscriber for AsyncStompClient {
-    fn subscribe_callback(&self, _: DestinationId, _: Result<SubscriptionId, StomperError>) {
+    fn subscribe_callback(
+        &self,
+        _: DestinationId,
+        _: Option<SubscriptionId>,
+        _: Result<SubscriptionId, StomperError>,
+    ) {
         todo!()
     }
     fn unsubscribe_callback(
         &self,
-        _: SubscriptionId,
+        _: Option<SubscriptionId>,
         _: std::result::Result<SubscriptionId, StomperError>,
     ) {
         todo!()
     }
-    fn send(&self, _: SubscriptionId, _: OutboundMessage) -> Result<(), StomperError> {
+    fn send(
+        &self,
+        _: SubscriptionId,
+        _: Option<SubscriptionId>,
+        _: OutboundMessage,
+    ) -> Result<(), StomperError> {
         todo!()
         // self.sender.send(frame).map_err(|_| StomperError {
         //     message: "Unable to send".to_owned(),
@@ -44,29 +55,36 @@ impl Subscriber for AsyncStompClient {
 }
 
 impl Sender for AsyncStompClient {
-    fn send_callback(&self, _: String, _: Result<(), StomperError>) {
+    fn send_callback(&self, _: Option<MessageId>, _: Result<MessageId, StomperError>) {
         todo!()
     }
 }
 
 impl Client for AsyncStompClient {
     fn connect_callback(&self, result: Result<(), StomperError>) {
-        todo!()
-        // let result = client.send(ServerFrame::Connected(ConnectedFrame::new(
-        //     VersionValue::new(StompVersion::V1_2),
-        //     None,
-        //     None,
-        //     None,
-        // )));
-
-        // if let Err(error) = result {
-        //     client.send(ServerFrame::Error(ErrorFrame::from_message(&error.message)));
-
-        //     Err(error)
-        // } else {
-        //     Ok(true)
-        // }
+        if let Err(err) = result.and_then(|()| {
+            self.sender
+                .send(ServerFrame::Connected(ConnectedFrame::new(
+                    VersionValue::new(StompVersion::V1_2),
+                    None,
+                    None,
+                    None,
+                )))
+                .map_err(|_| StomperError::new("channel error"))
+        }) {
+            log::error!("Error accepting client connection: {:?}", err);
+            if let Err(_) = self
+                .sender
+                .send(ServerFrame::Error(ErrorFrame::from_message(
+                    err.message.as_str(),
+                )))
+            {
+                log::error!("Error sending error: client dead?");
+                todo!() // Probably need to dispose of this client.
+            }
+        }
     }
+
     fn into_sender(self: Arc<Self>) -> Arc<(dyn Sender + 'static)> {
         self
     }

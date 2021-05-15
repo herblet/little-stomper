@@ -2,35 +2,35 @@
 #![feature(trait_alias)]
 extern crate log;
 pub mod asynchronous;
+// Must come before modules using the macros!
+mod macros;
+
 mod client;
 mod destinations;
 mod error;
 mod frame_handler;
+
 mod websocket;
 
-use asynchronous::client::AsyncStompClient;
 use asynchronous::client::ClientSession;
-use asynchronous::destinations::{AsyncDestinations, DestinationType, InMemDestination};
+use asynchronous::destinations::{AsyncDestinations, DestinationType};
+use asynchronous::inmemory::InMemDestination;
 use asynchronous::mpsc_sink::UnboundedSenderSink;
 
 use client::Client as StompClient;
-use destinations::{Destination, Destinations};
+use destinations::Destinations;
 use error::StomperError;
 
-use core::pin::Pin;
-use std::fmt::Display;
 // use futures_util::StreamExt;
 use futures::future::{FutureExt, TryFutureExt};
-use futures::sink::{Sink, SinkExt};
+use futures::sink::SinkExt;
 use futures::stream::{StreamExt, TryStreamExt};
 
 use std::future::ready;
 
 use log::info;
-use std::collections::HashMap;
 use std::future::Future;
-use std::io::Write;
-use std::str;
+
 use std::sync::Arc;
 use std::{env, io::Error};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -38,16 +38,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use env_logger;
 use stomp_parser::model::*;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{self, error::SendError, UnboundedReceiver, UnboundedSender};
-use tokio::sync::RwLock;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use frame_handler::{FrameHandler, FrameHandlerImpl};
-
-struct WebSocketHandler<T: Destinations> {
-    destinations: T,
-    client: Arc<AsyncStompClient>,
-}
 
 struct WebSocketMessageHandler {
     // where to call back to
@@ -94,69 +88,66 @@ impl WebSocketMessageHandler {
         })
     }
 }
-impl<T: Destinations + 'static> WebSocketHandler<T> {
-    pub fn handle(
-        websocket: WebSocketStream<tokio::net::TcpStream>,
-        destinations: T,
-    ) -> impl Future<Output = Result<(), StomperError>> + Send {
-        let (socket_tx, ws_stream) = websocket.split();
 
-        let (ws_tx, ws_rx) = mpsc::unbounded_channel();
+pub fn handle_websocket<T: Destinations + 'static>(
+    websocket: WebSocketStream<tokio::net::TcpStream>,
+    destinations: T,
+) -> impl Future<Output = Result<(), StomperError>> + Send {
+    let (socket_tx, ws_stream) = websocket.split();
 
-        let pong_channel = ws_tx.clone();
+    let (ws_tx, ws_rx) = mpsc::unbounded_channel();
 
-        let ws_response_processor_handle = tokio::task::spawn(async move {
-            UnboundedReceiverStream::new(ws_rx)
-                // Stop when a close message is received
-                .take_while(|msg| {
-                    ready(if let Message::Close(_) = msg {
-                        false
-                    } else {
-                        true
-                    })
+    let pong_channel = ws_tx.clone();
+
+    let ws_response_processor_handle = tokio::task::spawn(async move {
+        UnboundedReceiverStream::new(ws_rx)
+            // Stop when a close message is received
+            .take_while(|msg| {
+                ready(if let Message::Close(_) = msg {
+                    false
+                } else {
+                    true
                 })
-                .map(|msg| Ok(msg))
-                .forward(socket_tx)
-                .unwrap_or_else(|err| {
-                    info!("Error: {}", err);
-                    ()
-                })
-                .await;
-        });
-
-        // Transform the stream of websocket messages into a stream of byte arrays for the Stomp part;
-        // handle non-Stomp message types along the way
-        let bytes_stream = ws_stream
-            .map_err(|err| StomperError {
-                message: format!("Websocket error: {}", err.to_string()),
             })
-            .try_filter_map(WebSocketMessageHandler::new(pong_channel).into_filter_map())
-            .boxed();
+            .map(|msg| Ok(msg))
+            .forward(socket_tx)
+            .unwrap_or_else(|err| {
+                info!("Error: {}", err);
+                ()
+            })
+            .await;
+    });
 
-        let server_frame_sink = Box::pin(
-            UnboundedSenderSink::from(ws_tx)
-                .with(|frame| async { Ok(WebSocketHandler::<T>::to_message(frame)) }),
-        );
-
-        let session = ClientSession::new(server_frame_sink, destinations);
-
-        session.process_stream(bytes_stream).then(move |_| async {
-            ws_response_processor_handle
-                .await
-                .map_err(|_| StomperError {
-                    message: "Error awaiting WebSocket response handler".to_owned(),
-                })
+    // Transform the stream of websocket messages into a stream of byte arrays for the Stomp part;
+    // handle non-Stomp message types along the way
+    let bytes_stream = ws_stream
+        .map_err(|err| StomperError {
+            message: format!("Websocket error: {}", err.to_string()),
         })
-    }
+        .try_filter_map(WebSocketMessageHandler::new(pong_channel).into_filter_map())
+        .boxed();
 
-    fn to_message(frame: ServerFrame) -> Message {
-        match frame {
-            ServerFrame::Connected(frame) => Message::text(frame.to_string()),
-            ServerFrame::Message(frame) => Message::text(frame.to_string()),
-            ServerFrame::Receipt(frame) => Message::text(frame.to_string()),
-            ServerFrame::Error(frame) => Message::text(frame.to_string()),
-            _ => Message::text("Error\nUnknown Frame\n\n\x00"),
-        }
+    let server_frame_sink =
+        Box::pin(UnboundedSenderSink::from(ws_tx).with(|frame| async { Ok(to_message(frame)) }));
+
+    let session = ClientSession::new(server_frame_sink, destinations);
+
+    session.process_stream(bytes_stream).then(move |_| async {
+        ws_response_processor_handle
+            .await
+            .map_err(|_| StomperError {
+                message: "Error awaiting WebSocket response handler".to_owned(),
+            })
+    })
+}
+
+fn to_message(frame: ServerFrame) -> Message {
+    match frame {
+        ServerFrame::Connected(frame) => Message::text(frame.to_string()),
+        ServerFrame::Message(frame) => Message::text(frame.to_string()),
+        ServerFrame::Receipt(frame) => Message::text(frame.to_string()),
+        ServerFrame::Error(frame) => Message::text(frame.to_string()),
+        _ => Message::text("Error\nUnknown Frame\n\n\x00"),
     }
 }
 
@@ -199,7 +190,9 @@ async fn accept_connection<D: DestinationType + 'static>(
 
     info!("New WebSocket connection: {}", addr);
 
-    WebSocketHandler::handle(ws_stream, destinations).await;
+    if let Err(err) = handle_websocket(ws_stream, destinations).await {
+        log::error!("Error handling websocket: {}", err);
+    }
 
     info!(" Connection Ended: {}", addr);
 }

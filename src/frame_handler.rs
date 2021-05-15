@@ -2,7 +2,7 @@
 use super::{StompClient, StomperError};
 use crate::destinations::{
     BorrowedSender, BorrowedSubscriber, DestinationId, Destinations, InboundMessage,
-    OutboundMessage, Sender, Subscriber,
+    OutboundMessage, Sender, Subscriber, SubscriptionId,
 };
 use futures::FutureExt;
 use log::info;
@@ -55,6 +55,7 @@ impl FrameHandler for FrameHandlerImpl {
             ClientFrame::Subscribe(frame) => {
                 destinations.subscribe(
                     DestinationId(frame.destination.value().clone()),
+                    Some(SubscriptionId::from(frame.id.value())),
                     client.clone().into_subscriber(),
                 );
                 ready(Ok(true)).boxed()
@@ -64,7 +65,7 @@ impl FrameHandler for FrameHandlerImpl {
                 destinations.send(
                     DestinationId(frame.destination.value().clone()),
                     InboundMessage {
-                        sender_message_id: "".to_owned(),
+                        sender_message_id: None,
                         body: frame.body().unwrap().to_owned(),
                     },
                     client.clone().into_sender(),
@@ -72,7 +73,7 @@ impl FrameHandler for FrameHandlerImpl {
                 ready(Ok(true)).boxed()
             }
 
-            ClientFrame::Disconnect(frame) => {
+            ClientFrame::Disconnect(_frame) => {
                 info!("Client Disconnecting");
                 ready(Ok(false)).boxed()
             }
