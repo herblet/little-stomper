@@ -45,6 +45,25 @@ impl FrameHandler for FrameHandlerImpl {
                 }
                 ready(Ok(true)).boxed()
             }
+            // Code looks the same, but uses a differen type - need to fix macro
+            ClientFrame::Stomp(frame) => {
+                if frame
+                    .accepted_versions
+                    .value()
+                    .contains(&StompVersion::V1_2)
+                {
+                    client.connect_callback(Ok(()));
+                } else {
+                    client.connect_callback(Err(StomperError::new(
+                        format!(
+                            "Unavailable Version {:?} requested.",
+                            frame.accepted_versions
+                        )
+                        .as_str(),
+                    )));
+                }
+                ready(Ok(true)).boxed()
+            }
 
             ClientFrame::Subscribe(frame) => {
                 destinations.subscribe(
@@ -71,7 +90,29 @@ impl FrameHandler for FrameHandlerImpl {
                 info!("Client Disconnecting");
                 ready(Ok(false)).boxed()
             }
-            _ => panic!("Unknown frame"),
+            ClientFrame::Unsubscribe(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Abort(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Ack(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Begin(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Commit(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Nack(_frame) => {
+                todo!()
+            }
         }
     }
 }
