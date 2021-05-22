@@ -1,13 +1,21 @@
 use crate::destinations::*;
 use crate::error::StomperError;
 
-use nonlocking::{AsyncMap, VersionedMap};
+use async_map::{AsyncMap, VersionedMap};
 
 use std::sync::Arc;
 
 use futures::FutureExt;
 
-pub trait DestinationType = Destination + Send + Unpin + Sync + Clone + 'static;
+pub trait DestinationType:
+    Destination + Send + Unpin + Sync + Clone + std::fmt::Debug + 'static
+{
+}
+
+impl<T: Destination + Send + Unpin + Sync + Clone + std::fmt::Debug + 'static> DestinationType
+    for T
+{
+}
 
 #[derive(Clone)]
 pub struct AsyncDestinations<D: DestinationType> {
@@ -27,7 +35,7 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
                 .get(
                     &destination,
                     self.destination_factory.clone()
-                        as Arc<dyn Fn(&DestinationId) -> D + Sync + Send + 'static>,
+                        as Arc<dyn Fn(&DestinationId) -> D + Send + Sync>,
                 )
                 .inspect(|destination| {
                     destination.subscribe(subscriber_sub_id, client);

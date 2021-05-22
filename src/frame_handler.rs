@@ -1,6 +1,7 @@
 // use futures_util::StreamExt;
-use super::{StompClient, StomperError};
+use crate::client::Client as StompClient;
 use crate::destinations::{DestinationId, Destinations, InboundMessage, SubscriptionId};
+use crate::error::StomperError;
 use futures::FutureExt;
 use log::info;
 use std::future::{ready, Future};

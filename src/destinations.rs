@@ -41,7 +41,9 @@ pub trait Subscriber: Send + Sync + std::fmt::Debug {
     ) -> Result<(), StomperError>;
 }
 
-pub trait BorrowedSubscriber = Borrow<dyn Subscriber> + Send + 'static;
+pub trait BorrowedSubscriber: Borrow<dyn Subscriber> + Send + 'static {}
+
+impl<T: Borrow<dyn Subscriber> + Send + 'static> BorrowedSubscriber for T {}
 
 pub trait Sender: Send + Sync + std::fmt::Debug {
     fn send_callback(
@@ -51,7 +53,9 @@ pub trait Sender: Send + Sync + std::fmt::Debug {
     );
 }
 
-pub trait BorrowedSender = Borrow<dyn Sender> + Send + 'static;
+pub trait BorrowedSender: Borrow<dyn Sender> + Send + 'static {}
+
+impl<T: Borrow<dyn Sender> + Send + 'static> BorrowedSender for T {}
 
 /// A destinations is a identifiable resource that clients can subscribe to, and send messages to
 pub trait Destination: Send + Clone {

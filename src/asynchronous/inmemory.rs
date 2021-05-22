@@ -31,7 +31,7 @@ enum DestinationAction {
 }
 
 /// A destination that simply stores its subscriptions in memory
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct InMemDestination {
     id: DestinationId,
     sender: mpsc::UnboundedSender<DestinationAction>,

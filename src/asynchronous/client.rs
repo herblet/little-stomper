@@ -1,11 +1,10 @@
 use crate::client::Client;
 use crate::destinations::{
-    DestinationId, MessageId, OutboundMessage, Sender, Subscriber, SubscriptionId,
+    DestinationId, Destinations, MessageId, OutboundMessage, Sender, Subscriber, SubscriptionId,
 };
 use crate::error::StomperError;
-use crate::Destinations;
-use crate::FrameHandler;
-use crate::FrameHandlerImpl;
+use crate::frame_handler::FrameHandler;
+use crate::frame_handler::FrameHandlerImpl;
 
 use futures::{FutureExt, Sink, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::info;
