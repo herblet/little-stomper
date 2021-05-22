@@ -1,4 +1,4 @@
-#![crate_name = "stomper"]
+#![crate_name = "little_stomper"]
 extern crate log;
 pub mod asynchronous;
 // Must come before modules using the macros!
