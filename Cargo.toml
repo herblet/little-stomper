@@ -13,8 +13,8 @@ tokio = { version = "1.6", features = ["full"] }
 tokio-stream = "0.1.5"
 futures = { version = "^0.3", default-features = false, features = ["alloc"] }
 tokio-tungstenite = "^0.14"
-stomp-parser = { path="../stomp-parser", version = "^0.3.0" }
-async-map = { path="../async-map", version = "^0.2.1" }
+stomp-parser = { version = "^0.3.0" }
+async-map = { version = "^0.2.2" }
 log = "^0.4"
 env_logger = "^0.8"
 im = "^15.0.0"
