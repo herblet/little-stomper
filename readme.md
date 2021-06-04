@@ -2,7 +2,7 @@
 ![CI](https://github.com/herblet/little-stomper/actions/workflows/build_with_coverage.yml/badge.svg)
 [![codecov](https://codecov.io/gh/herblet/little-stomper/branch/main/graph/badge.svg?token=2DKFJT5UZJ)](https://codecov.io/gh/herblet/little-stomper)
 
-Little Stomper is a rust library which implements the STOMP protocol. It also includes a sample server using the library.
+Little Stomper is a rust library which implements the STOMP protocol. It also includes a [sample server](src/bin/sample_server.rs) using the library.
 
 It uses two other libraries developed as part of the same project:
 

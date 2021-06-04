@@ -1,3 +1,6 @@
+//! An async Stomp 1.2 library.
+//!
+//! A sample server using websockets on tokio is in `sample_server`.
 #![crate_name = "little_stomper"]
 #![warn(clippy::all)]
 extern crate log;
