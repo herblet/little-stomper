@@ -1,72 +1,117 @@
 use crate::client::Client;
 use crate::destinations::{
-    DestinationId, Destinations, MessageId, OutboundMessage, Sender, Subscriber, SubscriptionId,
+    DestinationId, Destinations, InboundMessage, MessageId, OutboundMessage, Sender, Subscriber,
+    SubscriptionId,
 };
 use crate::error::StomperError;
-use crate::frame_handler::FrameHandler;
-use crate::frame_handler::FrameHandlerImpl;
 
-use futures::{FutureExt, Sink, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::sink::Sink;
+use futures::stream::Stream;
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+
+use futures::stream::select_all::select_all;
 use log::info;
+use std::convert::TryFrom;
 use std::future::ready;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use stomp_parser::model::frames::client::parsers::client_frame;
-use stomp_parser::model::*;
+use stomp_parser::client::*;
+use stomp_parser::headers::*;
+use stomp_parser::server::*;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tokio::sync::mpsc::{self, UnboundedSender};
 
+use std::collections::HashMap;
+
+/// Indicates or changes the current state of the client
+enum ClientState {
+    Alive,
+    Dead,
+}
+
+/// And Event which a AsyncStompClient can receive
+enum ClientEvent {
+    /// A Frame from the client if received and parsed correctly, or Err if there was an error
+    ClientFrame(Result<ClientFrame, StomperError>),
+
+    /// A Message the server wishes to send to the client, specifying the (client's) subscription id, as well as the message itself
+    ServerMessage(SubscriptionId, OutboundMessage),
+
+    /// A callback indicating the result of an attempt to subscribe the client to a destination
+    Subscribed(
+        DestinationId,
+        SubscriptionId,
+        Result<SubscriptionId, StomperError>,
+    ),
+
+    /// A callback indicating the result of an attempt to unsubscribe the client from a destination
+    Unsubscribed(SubscriptionId, Result<SubscriptionId, StomperError>),
+    /// A callback indicating the result of an attempt to connect
+    Connected(Result<(), StomperError>),
+
+    /// An error that should be communicated to the client
+    Error(String),
+
+    /// An event indicating the client connection was closed.
+    Close,
+}
+
 #[derive(Debug)]
 pub struct AsyncStompClient {
-    sender: UnboundedSender<ServerFrame>,
+    sender: UnboundedSender<ClientEvent>,
+}
+
+impl AsyncStompClient {
+    fn send_event(&self, event: ClientEvent) {
+        if let Err(_) = self.sender.send(event) {
+            info!("Unable to send ClientEvent, channel closed?");
+        }
+    }
+
+    fn unwrap_subscriber_sub_id(subscriber_sub_id: Option<SubscriptionId>) -> SubscriptionId {
+        subscriber_sub_id
+            .expect("STOMP requires subscriptions to have a client-provided identifier")
+    }
 }
 
 impl Subscriber for AsyncStompClient {
     fn subscribe_callback(
         &self,
-        _: DestinationId,
-        _: Option<SubscriptionId>,
-        _: Result<SubscriptionId, StomperError>,
+        destination_id: DestinationId,
+        client_subscription_id: Option<SubscriptionId>,
+        subscribe_result: Result<SubscriptionId, StomperError>,
     ) {
-        // don't really care (for now?)
-        info!("Subscribed")
+        self.send_event(ClientEvent::Subscribed(
+            destination_id,
+            AsyncStompClient::unwrap_subscriber_sub_id(client_subscription_id),
+            subscribe_result,
+        ));
     }
     fn unsubscribe_callback(
         &self,
-        _: Option<SubscriptionId>,
-        _: std::result::Result<SubscriptionId, StomperError>,
+        client_subscription_id: Option<SubscriptionId>,
+        unsubscribe_result: std::result::Result<SubscriptionId, StomperError>,
     ) {
-        //don't really care (for now?)
-        info!("Unsubscribed")
+        self.send_event(ClientEvent::Unsubscribed(
+            AsyncStompClient::unwrap_subscriber_sub_id(client_subscription_id),
+            unsubscribe_result,
+        ));
     }
+
     fn send(
         &self,
         _: SubscriptionId,
         client_subscription_id: Option<SubscriptionId>,
         message: OutboundMessage,
     ) -> Result<(), StomperError> {
-        let raw_body = message.body;
-
-        let mut message = MessageFrame::new(
-            MessageIdValue::new(message.message_id.to_string()),
-            DestinationValue::new(message.destination.to_string()),
-            SubscriptionValue::new(
-                client_subscription_id
-                    .map(|sub_id| sub_id.to_string())
-                    .unwrap_or(String::from("unknown")),
-            ),
-            Some(ContentTypeValue::new("text/plain".to_owned())),
-            Some(ContentLengthValue::new(raw_body.len() as u32)),
-            (0, raw_body.len()),
-        );
-
-        message.set_raw(raw_body);
-
         self.sender
-            .send(ServerFrame::Message(message))
-            .or(Err(StomperError::new("Unable to send")))
+            .send(ClientEvent::ServerMessage(
+                AsyncStompClient::unwrap_subscriber_sub_id(client_subscription_id),
+                message,
+            ))
+            .map_err(|_| StomperError::new("Unable to send message, client channel closed"))
     }
 }
 
@@ -78,19 +123,7 @@ impl Sender for AsyncStompClient {
 
 impl Client for AsyncStompClient {
     fn connect_callback(&self, result: Result<(), StomperError>) {
-        if let Err(err) = result.and_then(|()| {
-            self.sender
-                .send(ServerFrame::Connected(ConnectedFrame::new(
-                    VersionValue::new(StompVersion::V1_2),
-                    None,
-                    None,
-                    None,
-                )))
-                .map_err(|_| StomperError::new("channel error"))
-        }) {
-            log::error!("Error accepting client connection: {:?}", err);
-            self.error(err.message.as_str());
-        }
+        self.send_event(ClientEvent::Connected(result));
     }
 
     fn into_sender(self: Arc<Self>) -> Arc<(dyn Sender + 'static)> {
@@ -101,89 +134,311 @@ impl Client for AsyncStompClient {
     }
 
     fn error(&self, message: &str) {
-        if let Err(_) = self
-            .sender
-            .send(ServerFrame::Error(ErrorFrame::from_message(message)))
-        {
-            log::error!("Error sending error: client dead?");
-            //Probably need to dispose of this client.
-        }
+        self.send_event(ClientEvent::Error(message.to_owned()));
     }
 }
 
 impl AsyncStompClient {
-    pub fn create(sender: UnboundedSender<ServerFrame>) -> Self {
+    fn create(sender: UnboundedSender<ClientEvent>) -> Self {
         AsyncStompClient { sender }
     }
 }
 
+type ResultType = Pin<
+    Box<
+        dyn Future<Output = Result<(ClientState, Option<ServerFrame>), StomperError>>
+            + Send
+            + 'static,
+    >,
+>;
+
 pub struct ClientSession<T>
 where
-    T: Destinations + Sized,
+    T: Destinations + 'static,
 {
     destinations: T,
-    server_frame_sink: Pin<Box<dyn Sink<ServerFrame, Error = StomperError> + Send>>,
+    client: Arc<AsyncStompClient>,
+    active_subscriptions_by_client_id: HashMap<SubscriptionId, (DestinationId, SubscriptionId)>,
 }
 
 impl<T> ClientSession<T>
 where
-    T: Destinations + Sized + 'static,
+    T: Destinations + 'static,
 {
-    pub fn new(
-        server_frame_sink: Pin<Box<dyn Sink<ServerFrame, Error = StomperError> + Send>>,
-        destinations: T,
-    ) -> ClientSession<T> {
+    fn new(destinations: T, client: Arc<AsyncStompClient>) -> ClientSession<T> {
         ClientSession {
             destinations,
-            server_frame_sink: server_frame_sink,
+            client,
+            active_subscriptions_by_client_id: HashMap::new(),
         }
     }
+
+    fn unsubscribe(&mut self, client_subscription_id: SubscriptionId) -> ResultType {
+        match self
+            .active_subscriptions_by_client_id
+            .get(&client_subscription_id)
+        {
+            None => self.error(&format!(
+                "Attempt to unsubscribe from unknown subscription: {}",
+                client_subscription_id
+            )),
+            Some((destination_id, destination_sub_id)) => {
+                self.destinations.unsubscribe(
+                    destination_id.clone(),
+                    destination_sub_id.clone(),
+                    self.client.clone().into_subscriber(),
+                );
+                ready(Ok((ClientState::Alive, None))).boxed()
+            }
+        }
+    }
+
+    fn client_frame(&mut self, frame: Result<ClientFrame, StomperError>) -> ResultType {
+        match frame {
+            Err(err) => self.error(&format!("Error processing client message: {:?}", err)),
+            Ok(frame) => self.handle(frame).boxed(),
+        }
+    }
+
+    fn subscribed(
+        &mut self,
+        destination: DestinationId,
+        client_subscription_id: SubscriptionId,
+        result: Result<SubscriptionId, StomperError>,
+    ) -> ResultType {
+        if let Ok(destination_sub_id) = result {
+            self.active_subscriptions_by_client_id
+                .insert(client_subscription_id, (destination, destination_sub_id));
+        }
+        ready(Ok((ClientState::Alive, None))).boxed()
+    }
+
+    fn unsubscribed(
+        &mut self,
+        client_subscription_id: SubscriptionId,
+        result: Result<SubscriptionId, StomperError>,
+    ) -> ResultType {
+        if let Ok(_) = result {
+            self.active_subscriptions_by_client_id
+                .remove(&client_subscription_id);
+        }
+        ready(Ok((ClientState::Alive, None))).boxed()
+    }
+
+    fn server_message(
+        &mut self,
+        client_subscription_id: SubscriptionId,
+        message: OutboundMessage,
+    ) -> ResultType {
+        let raw_body = message.body;
+
+        let message = MessageFrame::new(
+            MessageIdValue::new(message.message_id.to_string()),
+            DestinationValue::new(message.destination.to_string()),
+            SubscriptionValue::new(client_subscription_id.to_string()),
+            Some(ContentTypeValue::new("text/plain".to_owned())),
+            Some(ContentLengthValue::new(raw_body.len() as u32)),
+            raw_body,
+        );
+
+        ready(Ok((
+            ClientState::Alive,
+            Some(ServerFrame::Message(message)),
+        )))
+        .boxed()
+    }
+
+    fn connected(&mut self, result: Result<(), StomperError>) -> ResultType {
+        match result {
+            Ok(_) => ready(Ok((
+                ClientState::Alive,
+                Some(ServerFrame::Connected(ConnectedFrame::new(
+                    VersionValue::new(StompVersion::V1_2),
+                    None,
+                    None,
+                    None,
+                ))),
+            )))
+            .boxed(),
+            Err(_) => {
+                log::error!("Unable to initialise session.");
+                self.error("Unable to initialise session, connect failed")
+                    .map_ok(|(_, frame)| (ClientState::Dead, frame))
+                    .boxed()
+            }
+        }
+    }
+
+    fn error(&mut self, message: &str) -> ResultType {
+        ready(Ok((
+            ClientState::Alive,
+            Some(ServerFrame::Error(ErrorFrame::from_message(message))),
+        )))
+        .boxed()
+    }
+
+    fn handle_event(&mut self, event: ClientEvent) -> ResultType {
+        match event {
+            ClientEvent::Close => ready(Ok((ClientState::Dead, None))).boxed(),
+            ClientEvent::ClientFrame(result) => self.client_frame(result),
+            ClientEvent::ServerMessage(client_subscription_id, message) => {
+                self.server_message(client_subscription_id, message).boxed()
+            }
+            ClientEvent::Subscribed(destination, client_subscription_id, result) => {
+                self.subscribed(destination, client_subscription_id, result)
+            }
+            ClientEvent::Unsubscribed(client_subscription_id, result) => {
+                self.unsubscribed(client_subscription_id, result)
+            }
+            ClientEvent::Connected(result) => self.connected(result),
+            ClientEvent::Error(message) => self.error(&message),
+        }
+    }
+
+    async fn parse_client_message(bytes: Vec<u8>) -> Result<ClientFrame, StomperError> {
+        ClientFrame::try_from(bytes).map_err(|err| err.into())
+    }
+
+    fn log_error(error: &StomperError) {
+        log::error!("Error handling event: {}", error);
+    }
+
+    fn not_dead(
+        result: &Result<(ClientState, Option<ServerFrame>), StomperError>,
+    ) -> impl Future<Output = bool> {
+        ready(!matches!(result, Ok((ClientState::Dead, _))))
+    }
+
+    fn into_opt_ok_of_bytes(
+        result: Result<(ClientState, Option<ServerFrame>), StomperError>,
+    ) -> impl Future<Output = Option<Result<Vec<u8>, StomperError>>> {
+        ready(
+            // Drop the ClientState, already handled
+            result
+                .map(|(_, opt_frame)| {
+                    // serialize the frame
+                    opt_frame.map(|frame| frame.to_string().into_bytes())
+                })
+                // drop errors
+                .or(Ok(None))
+                // cause only Some(Ok(bytes)) values to be passed on
+                .transpose(),
+        )
+    }
     pub fn process_stream(
-        self,
-        stream: Pin<Box<dyn Stream<Item = Result<Vec<u8>, StomperError>> + Send>>,
-    ) -> impl Future<Output = Result<(), StomperError>> + Send {
+        stream: Pin<Box<dyn Stream<Item = Result<Vec<u8>, StomperError>> + Send + 'static>>,
+        server_frame_sink: Pin<
+            Box<dyn Sink<Vec<u8>, Error = StomperError> + Sync + Send + 'static>,
+        >,
+        destinations: T,
+    ) -> impl Future<Output = Result<(), StomperError>> + Send + 'static {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let client = Arc::new(AsyncStompClient::create(tx));
 
-        let handler = FrameHandlerImpl {};
+        // Closes this session; will be chained to client stream to run after that ends
+        let close_stream = futures::stream::once(async { ClientEvent::Close });
 
-        let destinations = self.destinations;
+        let stream_from_client = stream
+            .and_then(Self::parse_client_message)
+            .map(ClientEvent::ClientFrame)
+            .chain(close_stream);
 
-        let err_client = client.clone();
-        let ready_when_done = stream
-            .and_then(|bytes| async { client_frame(bytes) }.err_into())
-            .and_then(move |client_frame| {
-                handler.handle(client_frame, &destinations, client.clone())
-            })
-            .inspect_err(move |err| {
-                err_client.error(&format!("Websocket error: {}", err));
-            })
-            .try_take_while(|cont| ready(Ok(*cont)))
-            .try_fold((), |_, _| ready(Ok(())));
+        // This is the stream of events generated by processing on the server-side, rather than directly from the client
+        let stream_from_server = UnboundedReceiverStream::new(rx);
 
-        tokio::task::spawn(
-            UnboundedReceiverStream::new(rx)
-                .take_until(ready_when_done) // Ensures this stream will end when the input stream has been processed to completion
-                .map(|msg| Ok(msg))
-                .forward(self.server_frame_sink)
-                .unwrap_or_else(|err| {
-                    info!("Error: {}", err);
-                    ()
-                }),
-        )
-        .inspect(|_| info!("Client completing"))
-        .map_err(|_| StomperError::new("Unable to join response task"))
+        let all_events = select_all(vec![stream_from_client.boxed(), stream_from_server.boxed()]);
+
+        let event_handler = {
+            let mut client_session = ClientSession::new(destinations, client);
+
+            move |event| client_session.handle_event(event)
+        };
+
+        let all_events = all_events
+            .then(event_handler)
+            .inspect_err(Self::log_error)
+            .take_while(Self::not_dead)
+            .filter_map(Self::into_opt_ok_of_bytes);
+
+        tokio::task::spawn(all_events.forward(server_frame_sink))
+            .inspect(|_| info!("Client completing"))
+            .map_ok(|_| ()) // ignore the result from the forward.
+            .map_err(|_| StomperError::new("Unable to join response task"))
+    }
+
+    fn handle(&mut self, frame: ClientFrame) -> ResultType {
+        match frame {
+            ClientFrame::Connect(frame) => {
+                if frame.accept_version.value().contains(&StompVersion::V1_2) {
+                    self.client.connect_callback(Ok(()));
+                } else {
+                    self.client.connect_callback(Err(StomperError::new(
+                        format!("Unavailable Version {:?} requested.", frame.accept_version)
+                            .as_str(),
+                    )));
+                }
+                ready(Ok((ClientState::Alive, None))).boxed()
+            }
+
+            ClientFrame::Subscribe(frame) => {
+                self.destinations.subscribe(
+                    DestinationId(frame.destination.value().clone()),
+                    Some(SubscriptionId::from(frame.id.value())),
+                    self.client.clone().into_subscriber(),
+                );
+                ready(Ok((ClientState::Alive, None))).boxed()
+            }
+
+            ClientFrame::Send(frame) => {
+                self.destinations.send(
+                    DestinationId(frame.destination.value().clone()),
+                    InboundMessage {
+                        sender_message_id: None,
+                        body: frame.body().unwrap().to_owned(),
+                    },
+                    self.client.clone().into_sender(),
+                );
+                ready(Ok((ClientState::Alive, None))).boxed()
+            }
+
+            ClientFrame::Disconnect(_frame) => {
+                info!("Client Disconnecting");
+                ready(Ok((ClientState::Dead, None))).boxed()
+            }
+            ClientFrame::Unsubscribe(frame) => {
+                self.unsubscribe(SubscriptionId(frame.id.value().clone()))
+            }
+
+            ClientFrame::Abort(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Ack(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Begin(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Commit(_frame) => {
+                todo!()
+            }
+
+            ClientFrame::Nack(_frame) => {
+                todo!()
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::AsyncStompClient;
+    use super::{AsyncStompClient, ClientEvent};
     use crate::destinations::{
         DestinationId, MessageId, OutboundMessage, Subscriber, SubscriptionId,
     };
-    use stomp_parser::model::ServerFrame;
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -206,11 +461,8 @@ mod tests {
             panic!("Send failed");
         }
 
-        if let Some(ServerFrame::Message(frame)) = rx.recv().await {
-            assert_eq!(
-                "Hello, World",
-                std::str::from_utf8(frame.body().unwrap()).unwrap()
-            );
+        if let Some(ClientEvent::ServerMessage(_, message)) = rx.recv().await {
+            assert_eq!("Hello, World", std::str::from_utf8(&message.body).unwrap());
         } else {
             panic!("No, or incorrect, message received");
         }
@@ -235,7 +487,10 @@ mod tests {
         );
 
         if let Err(error) = result {
-            assert_eq!("Unable to send", error.message)
+            assert_eq!(
+                "Unable to send message, client channel closed",
+                error.message
+            )
         } else {
             panic!("No, or incorrect, error message received");
         }

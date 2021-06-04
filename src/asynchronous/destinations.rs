@@ -62,6 +62,18 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
             );
         }
     }
+    fn unsubscribe<T: BorrowedSubscriber>(
+        &self,
+        destination: DestinationId,
+        subscription: SubscriptionId,
+        subscriber: T,
+    ) {
+        if let Some(destination) = self.destinations.get_if_present(&destination) {
+            destination.unsubscribe(subscription, subscriber);
+        } else {
+            log::info!("Requested unsubscribe for unknown destination");
+        }
+    }
 }
 
 impl<D: DestinationType> AsyncDestinations<D> {

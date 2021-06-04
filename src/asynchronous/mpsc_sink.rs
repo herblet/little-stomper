@@ -2,7 +2,6 @@ use crate::error::StomperError;
 use futures::sink::Sink;
 use futures::task::Poll;
 use tokio::sync::mpsc::UnboundedSender;
-
 /// Wraps an UnboundedSender in a Sink
 pub struct UnboundedSenderSink<T> {
     sender: Option<UnboundedSender<T>>,
@@ -78,5 +77,79 @@ impl<T> Sink<T> for UnboundedSenderSink<T> {
         //drop the sender
         self.sender.take();
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use futures::sink::SinkExt;
+    use futures::FutureExt;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn it_sends_to_the_sender() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        let mut sink = super::UnboundedSenderSink::from(sender);
+
+        sink.send("hello").await.expect("Send failed");
+
+        let result = receiver.recv().now_or_never();
+
+        assert!(matches!(result, Some(Some("hello"))));
+    }
+
+    #[tokio::test]
+    async fn it_sends_multiple_times() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        let mut sink = super::UnboundedSenderSink::from(sender);
+
+        sink.send("hello").await.expect("Send failed");
+        sink.send("bye").await.expect("Send failed");
+
+        let result = receiver.recv().now_or_never();
+
+        assert!(matches!(result, Some(Some("hello"))));
+
+        let result = receiver.recv().now_or_never();
+
+        assert!(matches!(result, Some(Some("bye"))));
+    }
+
+    #[tokio::test]
+    async fn it_closes_the_sender() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        let mut sink = super::UnboundedSenderSink::from(sender);
+
+        sink.send("hello").await.expect("Send failed");
+
+        let result = receiver.recv().now_or_never();
+
+        assert!(matches!(result, Some(Some("hello"))));
+
+        sink.close().await.expect("Close failed");
+
+        let result = receiver.recv().now_or_never();
+
+        assert!(matches!(result, Some(None)));
+    }
+
+    #[tokio::test]
+    async fn it_fails_if_receiver_closed() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        let mut sink = super::UnboundedSenderSink::from(sender);
+
+        sink.send("hello").await.expect("Send failed");
+
+        let result = receiver.recv().now_or_never();
+
+        assert!(matches!(result, Some(Some("hello"))));
+
+        receiver.close();
+
+        assert!(matches!(sink.send("Fails").await, Err(_)));
     }
 }

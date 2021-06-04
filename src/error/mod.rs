@@ -2,7 +2,7 @@ use std::convert::From;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use stomp_parser::StompParseError;
+use stomp_parser::error::StompParseError;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct StomperError {

@@ -79,6 +79,13 @@ pub trait Destinations: Send + Clone {
         client: T,
     );
 
+    fn unsubscribe<T: BorrowedSubscriber>(
+        &self,
+        destination: DestinationId,
+        destination_subscription_id: SubscriptionId,
+        client: T,
+    );
+
     /// Send a message to this destination and, by implication, all clients subscribed to it
     fn send<T: BorrowedSender>(
         &self,
