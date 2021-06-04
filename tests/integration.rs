@@ -1,15 +1,12 @@
 use std::{convert::TryFrom, sync::Arc};
 
-use futures::{
-    future::{join, ready, select},
-    FutureExt, StreamExt,
-};
+use futures::{future::join, FutureExt, StreamExt};
 use little_stomper::asynchronous::{
     client::ClientSession, destinations::AsyncDestinations, inmemory::InMemDestination,
     mpsc_sink::UnboundedSenderSink,
 };
 use stomp_parser::{
-    client::{ClientFrame, ConnectFrame},
+    client::ConnectFrame,
     headers::{AcceptVersionValue, HostValue, StompVersion, StompVersions},
     server::ServerFrame,
 };
@@ -23,14 +20,14 @@ async fn it_works() {
 
     let destinations = AsyncDestinations::start(Arc::new(InMemDestination::create)).await;
 
-    let sessionFuture = ClientSession::process_stream(
+    let session_future = ClientSession::process_stream(
         Box::pin(UnboundedReceiverStream::new(in_receiver)),
         Box::pin(UnboundedSenderSink::from(out_sender)),
         destinations,
     )
     .boxed();
 
-    let otherFuture = tokio::task::spawn(async move {
+    let other_future = tokio::task::spawn(async move {
         let connect = ConnectFrame::new(
             HostValue::new("here".to_owned()),
             AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
@@ -57,7 +54,7 @@ async fn it_works() {
         receiver_stream.close();
     });
 
-    let results = join(sessionFuture, otherFuture).await;
+    let results = join(session_future, other_future).await;
 
     assert!(results.0.is_ok());
     assert!(results.1.is_ok());
