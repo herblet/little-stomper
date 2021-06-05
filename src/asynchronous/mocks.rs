@@ -16,6 +16,7 @@ mock! {
         fn into_sender(self: Arc<Self>) -> Arc<dyn Sender>;
         fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
         fn error(&self, message: &str);
+        fn send_heartbeat(self: Arc<Self>);
     }
 
     impl Sender for TestClient {

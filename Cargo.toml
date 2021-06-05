@@ -19,6 +19,7 @@ log = "^0.4"
 env_logger = "^0.8"
 im = "^15.0.0"
 uuid = { version = "^0.8.2", features = ["v4"] }
+either = "1.6"
 
 [dependencies.tungstenite]
 version = "^0.13.0"

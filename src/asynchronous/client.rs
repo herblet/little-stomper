@@ -5,6 +5,7 @@ use crate::destinations::{
 };
 use crate::error::StomperError;
 
+use either::Either;
 use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
@@ -16,9 +17,11 @@ use std::future::ready;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use stomp_parser::client::*;
 use stomp_parser::headers::*;
 use stomp_parser::server::*;
+use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -53,6 +56,9 @@ enum ClientEvent {
 
     /// An error that should be communicated to the client
     Error(String),
+
+    /// Send a heartbeat to the client
+    Heartbeat,
 
     /// An event indicating the client connection was closed.
     Close,
@@ -136,6 +142,10 @@ impl Client for AsyncStompClient {
     fn error(&self, message: &str) {
         self.send_event(ClientEvent::Error(message.to_owned()));
     }
+
+    fn send_heartbeat(self: Arc<Self>) {
+        self.send_event(ClientEvent::Heartbeat)
+    }
 }
 
 impl AsyncStompClient {
@@ -146,11 +156,16 @@ impl AsyncStompClient {
 
 type ResultType = Pin<
     Box<
-        dyn Future<Output = Result<(ClientState, Option<ServerFrame>), StomperError>>
-            + Send
+        dyn Future<
+                Output = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
+            > + Send
             + 'static,
     >,
 >;
+
+fn frame_result(frame: ServerFrame) -> ResultType {
+    ready(Ok((ClientState::Alive, Some(Either::Left(frame))))).boxed()
+}
 
 pub struct ClientSession<T>
 where
@@ -241,25 +256,17 @@ where
             raw_body,
         );
 
-        ready(Ok((
-            ClientState::Alive,
-            Some(ServerFrame::Message(message)),
-        )))
-        .boxed()
+        frame_result(ServerFrame::Message(message))
     }
 
     fn connected(&mut self, result: Result<(), StomperError>) -> ResultType {
         match result {
-            Ok(_) => ready(Ok((
-                ClientState::Alive,
-                Some(ServerFrame::Connected(ConnectedFrame::new(
-                    VersionValue::new(StompVersion::V1_2),
-                    None,
-                    None,
-                    None,
-                ))),
-            )))
-            .boxed(),
+            Ok(_) => frame_result(ServerFrame::Connected(ConnectedFrame::new(
+                VersionValue::new(StompVersion::V1_2),
+                None,
+                None,
+                None,
+            ))),
             Err(_) => {
                 log::error!("Unable to initialise session.");
                 self.error("Unable to initialise session, connect failed")
@@ -270,9 +277,13 @@ where
     }
 
     fn error(&mut self, message: &str) -> ResultType {
+        frame_result(ServerFrame::Error(ErrorFrame::from_message(message)))
+    }
+
+    fn heartbeat(&self) -> ResultType {
         ready(Ok((
             ClientState::Alive,
-            Some(ServerFrame::Error(ErrorFrame::from_message(message))),
+            Some(Either::Right(b"\n".to_vec())),
         )))
         .boxed()
     }
@@ -292,6 +303,7 @@ where
             }
             ClientEvent::Connected(result) => self.connected(result),
             ClientEvent::Error(message) => self.error(&message),
+            ClientEvent::Heartbeat => self.heartbeat(),
         }
     }
 
@@ -303,21 +315,22 @@ where
         log::error!("Error handling event: {}", error);
     }
 
-    fn not_dead(
-        result: &Result<(ClientState, Option<ServerFrame>), StomperError>,
-    ) -> impl Future<Output = bool> {
+    fn not_dead<Q>(result: &Result<(ClientState, Q), StomperError>) -> impl Future<Output = bool> {
         ready(!matches!(result, Ok((ClientState::Dead, _))))
     }
 
     fn into_opt_ok_of_bytes(
-        result: Result<(ClientState, Option<ServerFrame>), StomperError>,
+        result: Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
     ) -> impl Future<Output = Option<Result<Vec<u8>, StomperError>>> {
         ready(
             // Drop the ClientState, already handled
             result
                 .map(|(_, opt_frame)| {
                     // serialize the frame
-                    opt_frame.map(|frame| frame.to_string().into_bytes())
+                    opt_frame.map(|either| match either {
+                        Either::Left(frame) => frame.to_string().into_bytes(),
+                        Either::Right(bytes) => bytes,
+                    })
                 })
                 // drop errors
                 .or(Ok(None))
@@ -377,6 +390,15 @@ where
                         format!("Unavailable Version {:?} requested.", frame.accept_version)
                             .as_str(),
                     )));
+                }
+
+                if frame.heartbeat.value().expected > 0 {
+                    let client = self.client.clone();
+                    let heart_beat_interval = frame.heartbeat.value().expected;
+                    tokio::task::spawn(async move {
+                        sleep(Duration::from_millis(heart_beat_interval as u64)).await;
+                        client.send_heartbeat();
+                    });
                 }
                 ready(Ok((ClientState::Alive, None))).boxed()
             }

@@ -18,4 +18,6 @@ pub trait Client: Subscriber + Sender + Sync + Send {
 
     /// Exposes self as a Subscriber.
     fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
+
+    fn send_heartbeat(self: Arc<Self>);
 }
