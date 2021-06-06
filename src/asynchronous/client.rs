@@ -21,12 +21,15 @@ use std::time::Duration;
 use stomp_parser::client::*;
 use stomp_parser::headers::*;
 use stomp_parser::server::*;
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use std::collections::HashMap;
+
+const EOL: &'static [u8; 1] = b"\n";
 
 /// Indicates or changes the current state of the client
 enum ClientState {
@@ -143,7 +146,7 @@ impl Client for AsyncStompClient {
         self.send_event(ClientEvent::Error(message.to_owned()));
     }
 
-    fn send_heartbeat(self: Arc<Self>) {
+    fn send_heartbeat(&self) {
         self.send_event(ClientEvent::Heartbeat)
     }
 }
@@ -174,6 +177,16 @@ where
     destinations: T,
     client: Arc<AsyncStompClient>,
     active_subscriptions_by_client_id: HashMap<SubscriptionId, (DestinationId, SubscriptionId)>,
+    heartbeat_task: Option<JoinHandle<()>>,
+}
+
+impl<T> Drop for ClientSession<T>
+where
+    T: Destinations + 'static,
+{
+    fn drop(&mut self) {
+        self.end_heartbeat();
+    }
 }
 
 impl<T> ClientSession<T>
@@ -185,6 +198,7 @@ where
             destinations,
             client,
             active_subscriptions_by_client_id: HashMap::new(),
+            heartbeat_task: None,
         }
     }
 
@@ -280,12 +294,8 @@ where
         frame_result(ServerFrame::Error(ErrorFrame::from_message(message)))
     }
 
-    fn heartbeat(&self) -> ResultType {
-        ready(Ok((
-            ClientState::Alive,
-            Some(Either::Right(b"\n".to_vec())),
-        )))
-        .boxed()
+    fn send_heartbeat(&self) -> ResultType {
+        ready(Ok((ClientState::Alive, Some(Either::Right(EOL.to_vec()))))).boxed()
     }
 
     fn handle_event(&mut self, event: ClientEvent) -> ResultType {
@@ -303,7 +313,7 @@ where
             }
             ClientEvent::Connected(result) => self.connected(result),
             ClientEvent::Error(message) => self.error(&message),
-            ClientEvent::Heartbeat => self.heartbeat(),
+            ClientEvent::Heartbeat => self.send_heartbeat(),
         }
     }
 
@@ -380,6 +390,23 @@ where
             .map_err(|_| StomperError::new("Unable to join response task"))
     }
 
+    fn start_heartbeat(&mut self, millis: u32) {
+        let client = self.client.clone();
+
+        self.heartbeat_task.replace(tokio::task::spawn(async move {
+            loop {
+                sleep(Duration::from_millis(millis as u64)).await;
+                client.send_heartbeat();
+            }
+        }));
+    }
+
+    fn end_heartbeat(&mut self) {
+        if let Some(heart_beat_task) = self.heartbeat_task.take() {
+            heart_beat_task.abort();
+        }
+    }
+
     fn handle(&mut self, frame: ClientFrame) -> ResultType {
         match frame {
             ClientFrame::Connect(frame) => {
@@ -393,12 +420,7 @@ where
                 }
 
                 if frame.heartbeat.value().expected > 0 {
-                    let client = self.client.clone();
-                    let heart_beat_interval = frame.heartbeat.value().expected;
-                    tokio::task::spawn(async move {
-                        sleep(Duration::from_millis(heart_beat_interval as u64)).await;
-                        client.send_heartbeat();
-                    });
+                    self.start_heartbeat(frame.heartbeat.value().expected);
                 }
                 ready(Ok((ClientState::Alive, None))).boxed()
             }

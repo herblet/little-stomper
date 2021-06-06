@@ -58,6 +58,21 @@ async fn server_sends_requested_heartbeat() {
     test_client_expectations(connect.then(Box::new(expect_heartbeat))).await;
 }
 
+#[tokio::test]
+async fn server_continues_sending_heartbeat() {
+    let connect: BehaviourFunction = Box::new(connect_replies_connected);
+
+    test_client_expectations(
+        connect
+            .then(Box::new(expect_heartbeat))
+            .then(Box::new(expect_heartbeat))
+            .then(Box::new(expect_heartbeat))
+            .then(Box::new(expect_heartbeat))
+            .then(Box::new(expect_heartbeat)),
+    )
+    .await;
+}
+
 async fn test_client_expectations(client_behaviour: BehaviourFunction) {
     let (in_sender, in_receiver) = unbounded_channel();
     let (out_sender, out_receiver) = unbounded_channel();
@@ -94,7 +109,7 @@ fn connect_replies_connected(
         let connect = ConnectFrame::new(
             HostValue::new("here".to_owned()),
             AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(500, 0))),
+            Some(HeartBeatValue::new(HeartBeatIntervalls::new(0, 500))),
             None,
             None,
         );
@@ -124,14 +139,20 @@ fn expect_heartbeat(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        sleep(Duration::from_millis(600)).await;
+        tokio::time::pause();
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        tokio::time::resume();
 
         let response = out_receiver.recv().now_or_never();
 
         if let Some(Some(bytes)) = response {
             assert!(matches!(&*bytes, b"\n" | b"\r\n"));
         } else {
-            panic!("Unexpected server message");
+            if response.is_none() {
+                panic!("No server message");
+            } else {
+                panic!("Unexpected server message:{:?}", response.unwrap());
+            }
         }
 
         (in_sender, out_receiver)
