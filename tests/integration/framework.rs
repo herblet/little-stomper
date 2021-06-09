@@ -44,6 +44,12 @@ impl<T: BehaviourFunction + 'static> Chainable for T {
     }
 }
 
+pub fn send_data<T: std::fmt::Display>(in_sender: &InSender, data: T) {
+    in_sender
+        .send(Ok(data.to_string().into_bytes()))
+        .expect("Connect failed");
+}
+
 pub async fn test_client_expectations<T: BehaviourFunction>(client_behaviour: T) {
     let (in_sender, in_receiver) = unbounded_channel();
     let (out_sender, out_receiver) = unbounded_channel();

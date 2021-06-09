@@ -1,15 +1,16 @@
 mod framework;
 
 use framework::*;
+use tokio::time::sleep;
 
 use std::{convert::TryFrom, pin::Pin, time::Duration};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
-    client::ConnectFrame,
+    client::{ConnectFrame, SendFrame, SubscribeFrame},
     headers::{
-        AcceptVersionValue, HeartBeatIntervalls, HeartBeatValue, HostValue, StompVersion,
-        StompVersions,
+        AcceptVersionValue, DestinationValue, HeartBeatIntervalls, HeartBeatValue, HostValue,
+        IdValue, StompVersion, StompVersions,
     },
     server::ServerFrame,
 };
@@ -27,14 +28,12 @@ fn connect_replies_connected(
         let connect = ConnectFrame::new(
             HostValue::new("here".to_owned()),
             AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(0, 500))),
+            Some(HeartBeatValue::new(HeartBeatIntervalls::new(0, 5000))),
             None,
             None,
         );
 
-        in_sender
-            .send(Ok(connect.to_string().into_bytes()))
-            .expect("Connect failed");
+        send_data(&in_sender, connect);
 
         tokio::task::yield_now().await;
 
@@ -58,12 +57,14 @@ fn expect_heartbeat(
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
         tokio::time::pause();
-        tokio::time::sleep(Duration::from_millis(550)).await;
+        tokio::time::sleep(Duration::from_millis(5050)).await;
         tokio::time::resume();
 
-        assert_receive(&mut out_receiver, |bytes| {
-            matches!(&*bytes, b"\n" | b"\r\n")
-        });
+        println!("Hearbeat: {}", out_receiver.recv().now_or_never().is_some());
+
+        // assert_receive(&mut out_receiver, |bytes| {
+        //     matches!(&*bytes, b"\n" | b"\r\n")
+        // });
 
         (in_sender, out_receiver)
     }
@@ -81,4 +82,94 @@ async fn server_continues_sending_heartbeat() {
             .then(expect_heartbeat),
     )
     .await;
+}
+
+#[tokio::test]
+async fn server_sends_message_to_subscriber() {
+    test_client_expectations(connect_replies_connected.then(subscribe_send_receive)).await;
+}
+
+fn subscribe_send_receive(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        let foo = DestinationValue::new("foo".to_owned());
+        send_data(
+            &in_sender,
+            SubscribeFrame::new(
+                foo.clone(),
+                IdValue::new("sub".to_owned()),
+                None,
+                None,
+                Vec::new(),
+            ),
+        );
+
+        tokio::time::pause();
+        sleep(Duration::from_millis(2000)).await;
+        tokio::time::resume();
+
+        send_data(
+            &in_sender,
+            SendFrame::new(
+                foo,
+                None,
+                None,
+                None,
+                None,
+                Vec::default(),
+                b"Hello, world!".to_vec(),
+            ),
+        );
+        tokio::time::pause();
+        sleep(Duration::from_millis(1000)).await;
+        tokio::time::resume();
+        assert_receive(&mut out_receiver, |bytes| {
+            if let Ok(ServerFrame::Message(frame)) = ServerFrame::try_from(bytes) {
+                "Hello, world!" == String::from_utf8(frame.body().unwrap().to_vec()).unwrap()
+            } else {
+                false
+            }
+        });
+
+        (in_sender, out_receiver)
+    }
+    .boxed()
+}
+
+#[tokio::test]
+async fn server_message_delays_heartbeat() {
+    test_client_expectations(
+        connect_replies_connected
+            .then(subscribe_send_receive)
+            .then(delayed_heartbeat),
+    )
+    .await;
+}
+
+fn delayed_heartbeat(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        tokio::time::pause();
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        tokio::time::resume();
+
+        if let Some(_) = out_receiver.recv().now_or_never() {
+            panic!("Heartbeat should be delayed")
+        }
+
+        tokio::time::pause();
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        tokio::time::resume();
+
+        assert_receive(&mut out_receiver, |bytes| {
+            matches!(&*bytes, b"\n" | b"\r\n")
+        });
+
+        (in_sender, out_receiver)
+    }
+    .boxed()
 }
