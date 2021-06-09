@@ -13,12 +13,13 @@ tokio = { version = "1.6", features = ["full"] }
 tokio-stream = "0.1.5"
 futures = { version = "^0.3", default-features = false, features = ["alloc"] }
 tokio-tungstenite = "^0.14"
-stomp-parser = { version = "^0.3.1" }
+stomp-parser = { version = "^0.3.3", git = "https://github.com/herblet/stomp-parser", branch="main"}
 async-map = { version = "^0.2.2" }
 log = "^0.4"
 env_logger = "^0.8"
 im = "^15.0.0"
 uuid = { version = "^0.8.2", features = ["v4"] }
+either = "1.6"
 
 [dependencies.tungstenite]
 version = "^0.13.0"
@@ -26,3 +27,4 @@ default-features = false
 
 [dev-dependencies]
 mockall = "0.9.1"
+tokio = { version = "1.6", features = ["full","test-util"] }
