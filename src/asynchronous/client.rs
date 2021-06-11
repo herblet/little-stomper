@@ -56,7 +56,7 @@ enum ClientEvent {
     /// A callback indicating the result of an attempt to unsubscribe the client from a destination
     Unsubscribed(SubscriptionId, Result<SubscriptionId, StomperError>),
     /// A callback indicating the result of an attempt to connect
-    Connected(Result<(), StomperError>),
+    Connected(Result<HeartBeatIntervalls, StomperError>),
 
     /// An error that should be communicated to the client
     Error(String),
@@ -132,10 +132,6 @@ impl Sender for AsyncStompClient {
 }
 
 impl Client for AsyncStompClient {
-    fn connect_callback(&self, result: Result<(), StomperError>) {
-        self.send_event(ClientEvent::Connected(result));
-    }
-
     fn into_sender(self: Arc<Self>) -> Arc<(dyn Sender + 'static)> {
         self
     }
@@ -178,15 +174,6 @@ where
     client: Arc<AsyncStompClient>,
     active_subscriptions_by_client_id: HashMap<SubscriptionId, (DestinationId, SubscriptionId)>,
     heartbeat_resetter: ResettableTimerResetter,
-}
-
-impl<T> Drop for ClientSession<T>
-where
-    T: Destinations + 'static,
-{
-    fn drop(&mut self) {
-        self.end_heartbeat();
-    }
 }
 
 impl<T> ClientSession<T>
@@ -277,21 +264,22 @@ where
         frame_result(ServerFrame::Message(message))
     }
 
-    fn connected(&mut self, result: Result<(), StomperError>) -> ResultType {
-        match result {
-            Ok(_) => frame_result(ServerFrame::Connected(ConnectedFrame::new(
-                VersionValue::new(StompVersion::V1_2),
-                None,
-                None,
-                None,
-            ))),
-            Err(_) => {
-                log::error!("Unable to initialise session.");
-                self.error("Unable to initialise session, connect failed")
-                    .map_ok(|(_, frame)| (ClientState::Dead, frame))
-                    .boxed()
-            }
+    fn connected(&mut self, requested_hearbeat: &HeartBeatIntervalls) -> ResultType {
+        let expected_heartbeat = requested_hearbeat.expected;
+
+        if expected_heartbeat > 0 {
+            self.start_heartbeat(expected_heartbeat);
         }
+
+        frame_result(ServerFrame::Connected(ConnectedFrame::new(
+            VersionValue::new(StompVersion::V1_2),
+            Some(HeartBeatValue::new(HeartBeatIntervalls::new(
+                requested_hearbeat.expected,
+                0,
+            ))),
+            None,
+            None,
+        )))
     }
 
     fn error(&mut self, message: &str) -> ResultType {
@@ -317,7 +305,9 @@ where
             ClientEvent::Unsubscribed(client_subscription_id, result) => {
                 self.unsubscribed(client_subscription_id, result)
             }
-            ClientEvent::Connected(result) => self.connected(result),
+            ClientEvent::Connected(result) => {
+                todo!() /* unused at present */
+            }
             ClientEvent::Error(message) => self.error(&message),
             ClientEvent::Heartbeat => self.send_heartbeat(),
         }
@@ -412,28 +402,14 @@ where
         }
     }
 
-    fn end_heartbeat(&mut self) {
-        // if let Some(heart_beat_task) = self.heartbeat_task.take() {
-        //     heart_beat_task.abort();
-        // }
-    }
-
     fn handle(&mut self, frame: ClientFrame) -> ResultType {
         match frame {
             ClientFrame::Connect(frame) => {
-                if frame.accept_version.value().contains(&StompVersion::V1_2) {
-                    self.client.connect_callback(Ok(()));
+                if !frame.accept_version.value().contains(&StompVersion::V1_2) {
+                    self.error("Only STOMP 1.2 is supported")
                 } else {
-                    self.client.connect_callback(Err(StomperError::new(
-                        format!("Unavailable Version {:?} requested.", frame.accept_version)
-                            .as_str(),
-                    )));
+                    self.connected(frame.heartbeat.value())
                 }
-
-                if frame.heartbeat.value().expected > 0 {
-                    self.start_heartbeat(frame.heartbeat.value().expected);
-                }
-                ready(Ok((ClientState::Alive, None))).boxed()
             }
 
             ClientFrame::Subscribe(frame) => {

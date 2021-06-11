@@ -9,8 +9,8 @@ use futures::{Future, FutureExt};
 use stomp_parser::{
     client::{ConnectFrame, SendFrame, SubscribeFrame},
     headers::{
-        AcceptVersionValue, DestinationValue, HeartBeatIntervalls, HeartBeatValue, HostValue,
-        IdValue, StompVersion, StompVersions,
+        AcceptVersionValue, DestinationValue, HeaderValue, HeartBeatIntervalls, HeartBeatValue,
+        HostValue, IdValue, StompVersion, StompVersions,
     },
     server::ServerFrame,
 };
@@ -38,7 +38,13 @@ fn connect_replies_connected(
         tokio::task::yield_now().await;
 
         assert_receive(&mut out_receiver, |bytes| {
-            matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Connected(_)))
+            match ServerFrame::try_from(bytes) {
+                Ok(ServerFrame::Connected(connected)) => {
+                    let hb = connected.heartbeat.expect("Heartbeat not provided");
+                    hb.value().expected == 0 && hb.value().supplied == 5000
+                }
+                _ => false,
+            }
         });
 
         (in_sender, out_receiver)
