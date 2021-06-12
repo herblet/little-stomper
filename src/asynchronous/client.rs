@@ -22,6 +22,7 @@ use std::time::Duration;
 use stomp_parser::client::*;
 use stomp_parser::headers::*;
 use stomp_parser::server::*;
+use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -31,6 +32,8 @@ use std::collections::HashMap;
 use super::delayable_stream::ResettableTimerResetter;
 
 const EOL: &'static [u8; 1] = b"\n";
+const LINGER_TIME: u64 = 1000;
+const HEARTBEAT_BUFFER_PERCENT: u32 = 20;
 
 /// Indicates or changes the current state of the client
 enum ClientState {
@@ -42,6 +45,8 @@ enum ClientState {
 enum ClientEvent {
     /// A Frame from the client if received and parsed correctly, or Err if there was an error
     ClientFrame(Result<ClientFrame, StomperError>),
+
+    ClientHeartbeat,
 
     /// A Message the server wishes to send to the client, specifying the (client's) subscription id, as well as the message itself
     ServerMessage(SubscriptionId, OutboundMessage),
@@ -55,8 +60,6 @@ enum ClientEvent {
 
     /// A callback indicating the result of an attempt to unsubscribe the client from a destination
     Unsubscribed(SubscriptionId, Result<SubscriptionId, StomperError>),
-    /// A callback indicating the result of an attempt to connect
-    Connected(Result<HeartBeatIntervalls, StomperError>),
 
     /// An error that should be communicated to the client
     Error(String),
@@ -164,8 +167,22 @@ type ResultType = Pin<
 >;
 
 fn frame_result(frame: ServerFrame) -> ResultType {
-    ready(Ok((ClientState::Alive, Some(Either::Left(frame))))).boxed()
+    state_frame_result(ClientState::Alive, frame)
 }
+
+fn state_frame_result(
+    state: ClientState,
+    frame: ServerFrame,
+) -> Pin<
+    Box<
+        dyn Future<
+                Output = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
+            > + Send,
+    >,
+> {
+    ready(Ok((state, Some(Either::Left(frame))))).boxed()
+}
+
 pub struct ClientSession<T>
 where
     T: Destinations + 'static,
@@ -173,7 +190,8 @@ where
     destinations: T,
     client: Arc<AsyncStompClient>,
     active_subscriptions_by_client_id: HashMap<SubscriptionId, (DestinationId, SubscriptionId)>,
-    heartbeat_resetter: ResettableTimerResetter,
+    server_heartbeat_resetter: ResettableTimerResetter,
+    client_heartbeat_resetter: ResettableTimerResetter,
 }
 
 impl<T> ClientSession<T>
@@ -183,13 +201,16 @@ where
     fn new(
         destinations: T,
         client: Arc<AsyncStompClient>,
-        heartbeat_resetter: ResettableTimerResetter,
+        server_heartbeat_resetter: ResettableTimerResetter,
+
+        client_heartbeat_resetter: ResettableTimerResetter,
     ) -> ClientSession<T> {
         ClientSession {
             destinations,
             client,
             active_subscriptions_by_client_id: HashMap::new(),
-            heartbeat_resetter,
+            server_heartbeat_resetter,
+            client_heartbeat_resetter,
         }
     }
 
@@ -265,17 +286,30 @@ where
     }
 
     fn connected(&mut self, requested_hearbeat: &HeartBeatIntervalls) -> ResultType {
-        let expected_heartbeat = requested_hearbeat.expected;
+        let server_heatbeat = requested_hearbeat.expected;
 
-        if expected_heartbeat > 0 {
-            self.start_heartbeat(expected_heartbeat);
+        let client_heartbeat = requested_hearbeat.supplied;
+
+        if client_heartbeat > 0 {
+            let heartbeat_with_buffer = client_heartbeat * (HEARTBEAT_BUFFER_PERCENT + 100) / 100;
+
+            if let Err(err) = self
+                .client_heartbeat_resetter
+                .change_period(Duration::from_millis(heartbeat_with_buffer as u64))
+            {
+                log::error!("Error initialising client heartbeat: {:?}", err);
+            }
+        }
+
+        if server_heatbeat > 0 {
+            self.start_heartbeat(server_heatbeat);
         }
 
         frame_result(ServerFrame::Connected(ConnectedFrame::new(
             VersionValue::new(StompVersion::V1_2),
             Some(HeartBeatValue::new(HeartBeatIntervalls::new(
-                requested_hearbeat.expected,
-                0,
+                server_heatbeat,
+                client_heartbeat,
             ))),
             None,
             None,
@@ -283,7 +317,11 @@ where
     }
 
     fn error(&mut self, message: &str) -> ResultType {
+        let client = self.client.clone();
+
         frame_result(ServerFrame::Error(ErrorFrame::from_message(message)))
+            .inspect(move |_| client.send_event(ClientEvent::Close))
+            .boxed()
     }
 
     fn send_heartbeat(&self) -> ResultType {
@@ -291,12 +329,27 @@ where
         ready(Ok((ClientState::Alive, Some(Either::Right(EOL.to_vec()))))).boxed()
     }
 
+    fn client_message_received(&mut self) {
+        if let Err(err) = self.client_heartbeat_resetter.reset() {
+            log::error!("Error resetting client heartbeat timeout: {:?}", err);
+        }
+    }
+
     fn handle_event(&mut self, event: ClientEvent) -> ResultType {
         match event {
             ClientEvent::Close => ready(Ok((ClientState::Dead, None))).boxed(),
-            ClientEvent::ClientFrame(result) => self.client_frame(result),
+            ClientEvent::ClientFrame(result) => {
+                self.client_message_received();
+                self.client_frame(result)
+            }
+            ClientEvent::ClientHeartbeat => {
+                self.client_message_received();
+                ready(Ok((ClientState::Alive, None))).boxed()
+            }
             ClientEvent::ServerMessage(client_subscription_id, message) => {
-                self.heartbeat_resetter.reset().expect("Unexpected error");
+                self.server_heartbeat_resetter
+                    .reset()
+                    .expect("Unexpected error");
                 self.server_message(client_subscription_id, message).boxed()
             }
             ClientEvent::Subscribed(destination, client_subscription_id, result) => {
@@ -305,17 +358,18 @@ where
             ClientEvent::Unsubscribed(client_subscription_id, result) => {
                 self.unsubscribed(client_subscription_id, result)
             }
-            ClientEvent::Connected(result) => {
-                todo!() /* unused at present */
-            }
             ClientEvent::Error(message) => self.error(&message),
             ClientEvent::Heartbeat => self.send_heartbeat(),
         }
         .boxed()
     }
 
-    async fn parse_client_message(bytes: Vec<u8>) -> Result<ClientFrame, StomperError> {
-        ClientFrame::try_from(bytes).map_err(|err| err.into())
+    async fn parse_client_message(bytes: Vec<u8>) -> Result<Option<ClientFrame>, StomperError> {
+        if is_heartbeat(&*bytes) {
+            Ok(None)
+        } else {
+            Some(ClientFrame::try_from(bytes).map_err(|err| err.into())).transpose()
+        }
     }
 
     fn log_error(error: &StomperError) {
@@ -359,24 +413,40 @@ where
         // Closes this session; will be chained to client stream to run after that ends
         let close_stream = futures::stream::once(async { ClientEvent::Close });
 
+        let (client_heartbeat_stream, client_heartbeat_resetter) = ResettableTimer::default();
+
         let stream_from_client = stream
             .and_then(Self::parse_client_message)
-            .map(ClientEvent::ClientFrame)
+            .map(|opt_frame| {
+                opt_frame
+                    .transpose()
+                    .map(ClientEvent::ClientFrame)
+                    .unwrap_or(ClientEvent::ClientHeartbeat)
+            })
             .chain(close_stream);
 
         // This is the stream of events generated by processing on the server-side, rather than directly from the client
         let stream_from_server = UnboundedReceiverStream::new(rx);
 
-        let (heartbeat_stream, heartbeat_resetter) = ResettableTimer::default();
+        let (server_heartbeat_stream, server_heartbeat_resetter) = ResettableTimer::default();
 
         let all_events = select_all(vec![
             stream_from_client.boxed(),
             stream_from_server.boxed(),
-            heartbeat_stream.map(|_| ClientEvent::Heartbeat).boxed(),
+            server_heartbeat_stream
+                .map(|_| ClientEvent::Heartbeat)
+                .boxed(),
         ]);
 
         let event_handler = {
-            let mut client_session = ClientSession::new(destinations, client, heartbeat_resetter);
+            let mut client_session = ClientSession::new(
+                destinations,
+                client,
+                server_heartbeat_resetter,
+                client_heartbeat_resetter,
+            );
+
+            client_session.start_heartbeat_listener(client_heartbeat_stream);
 
             move |event| client_session.handle_event(event)
         };
@@ -385,6 +455,10 @@ where
             .then(event_handler)
             .inspect_err(Self::log_error)
             .take_while(Self::not_dead)
+            .chain(futures::stream::once(async {
+                sleep(Duration::from_millis(LINGER_TIME)).await;
+                Err(StomperError::new("Closing stream"))
+            }))
             .filter_map(Self::into_opt_ok_of_bytes);
 
         tokio::task::spawn(all_events.forward(server_frame_sink))
@@ -395,11 +469,26 @@ where
 
     fn start_heartbeat(&mut self, millis: u32) {
         if let Err(err) = self
-            .heartbeat_resetter
+            .server_heartbeat_resetter
             .change_period(Duration::from_millis(millis as u64))
         {
             log::error!("Error starting heartbeat: {}", err);
         }
+    }
+
+    fn start_heartbeat_listener(&mut self, mut timer: ResettableTimer) {
+        tokio::task::spawn({
+            let client = self.client.clone();
+
+            async move {
+                timer
+                    .next()
+                    .inspect(|_| {
+                        client.send_event(ClientEvent::Error("Missed heartbeat".to_owned()));
+                    })
+                    .await
+            }
+        });
     }
 
     fn handle(&mut self, frame: ClientFrame) -> ResultType {
@@ -462,6 +551,10 @@ where
             }
         }
     }
+}
+
+fn is_heartbeat(bytes: &[u8]) -> bool {
+    matches!(bytes, b"\n" | b"\r\n")
 }
 
 #[cfg(test)]
