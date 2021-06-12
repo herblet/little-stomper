@@ -1,4 +1,4 @@
-use std::{pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use futures::{
     future::{join, ready},
@@ -93,4 +93,9 @@ pub fn assert_receive<T: FnOnce(Vec<u8>) -> bool>(
             panic!("Unexpected server message:{:?}", response.unwrap());
         }
     }
+}
+
+pub fn sleep_in_pause(millis: u64) -> impl Future<Output = ()> {
+    tokio::time::pause();
+    tokio::time::sleep(Duration::from_millis(millis)).inspect(|_| tokio::time::resume())
 }
