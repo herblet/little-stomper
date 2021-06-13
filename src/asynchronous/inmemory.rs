@@ -142,6 +142,8 @@ impl InMemDestinationBackend {
                 }
             }
         }
+
+        receiver.close();
     }
 
     fn add_subscription(
@@ -229,6 +231,7 @@ mod test {
     use std::sync::{Arc, RwLock};
 
     use tokio::task::yield_now;
+    use tungstenite::Message;
 
     fn into_sender(client: Arc<MockTestClient>) -> Arc<dyn Sender> {
         client
@@ -398,6 +401,84 @@ mod test {
             into_sender(client.clone()),
         );
 
+        yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn subscriber_error_callsback_error() {
+        let foo = DestinationId(String::from("foo"));
+        let destination = InMemDestination::create(&foo);
+        destination.close();
+        yield_now().await;
+
+        let mut client = create_client();
+        let sender_sub_id = SubscriptionId::from("false");
+
+        Arc::get_mut(&mut client)
+            .unwrap()
+            .expect_subscribe_callback()
+            .times(1)
+            .withf({
+                let sender_sub_id = sender_sub_id.clone();
+
+                move |dest_id, sub_id, result| {
+                    *dest_id == foo && *sub_id.as_ref().unwrap() == sender_sub_id && result.is_err()
+                }
+            })
+            .return_const(());
+
+        destination.subscribe(Some(sender_sub_id), into_subscriber(client));
+        yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn send_error_callsback_error() {
+        let foo = DestinationId(String::from("foo"));
+        let destination = InMemDestination::create(&foo);
+        destination.close();
+        yield_now().await;
+
+        let mut client = create_client();
+
+        let message_id = MessageId::from("foo");
+
+        Arc::get_mut(&mut client)
+            .unwrap()
+            .expect_send_callback()
+            .times(1)
+            .withf({
+                let message_id = message_id.clone();
+
+                move |msg_id, result| *msg_id.as_ref().unwrap() == message_id && result.is_err()
+            })
+            .return_const(());
+
+        let message = InboundMessage {
+            sender_message_id: Some(message_id),
+            body: vec![],
+        };
+        destination.send(message, into_sender(client));
+        yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn unsubscriber_error_callsback_error() {
+        let foo = DestinationId(String::from("foo"));
+        let destination = InMemDestination::create(&foo);
+        destination.close();
+        yield_now().await;
+
+        let mut client = create_client();
+        let sender_sub_id = SubscriptionId::from("false");
+
+        Arc::get_mut(&mut client)
+            .unwrap()
+            .expect_unsubscribe_callback()
+            .times(1)
+            .withf(move |sub_id, result| sub_id.is_none() && result.is_err())
+            .return_const(());
+
+        destination.unsubscribe(sender_sub_id, into_subscriber(client));
         yield_now().await;
     }
 }
