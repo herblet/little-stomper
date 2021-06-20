@@ -174,7 +174,9 @@ impl ResettableTimer {
 
 impl Drop for ResettableTimer {
     fn drop(&mut self) {
-        self.task.take().unwrap().abort();
+        if let Some(task) = self.task.take() {
+            task.abort()
+        }
     }
 }
 

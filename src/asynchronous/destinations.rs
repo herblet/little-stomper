@@ -90,7 +90,7 @@ impl<D: DestinationType> AsyncDestinations<D> {
 #[cfg(test)]
 mod test {
 
-    use super::super::mocks::{MockTestClient, MockTestDest};
+    use super::super::mocks::*;
     use super::AsyncDestinations;
     use crate::destinations::*;
 
@@ -124,23 +124,6 @@ mod test {
         fn close(&self) {
             self.as_ref().close()
         }
-    }
-
-    fn into_sender(client: Arc<MockTestClient>) -> Arc<dyn Sender> {
-        client
-    }
-
-    fn into_subscriber(client: Arc<MockTestClient>) -> Arc<dyn Subscriber> {
-        client
-    }
-
-    fn create_client() -> Arc<MockTestClient> {
-        let mut mock_client = Arc::new(MockTestClient::new());
-        Arc::get_mut(&mut mock_client)
-            .unwrap()
-            .expect_into_subscriber()
-            .returning(|| into_subscriber(Arc::new(MockTestClient::new())));
-        mock_client
     }
 
     fn map_draining_factory(
@@ -216,9 +199,9 @@ mod test {
         ))
         .await;
 
-        let client = create_client();
+        let subscriber = create_subscriber();
 
-        destinations.subscribe(foo, Some(sub_id), into_subscriber(client));
+        destinations.subscribe(foo, Some(sub_id), into_subscriber(subscriber));
 
         yield_now().await;
 
@@ -251,11 +234,13 @@ mod test {
         ))
         .await;
 
-        let client = create_client();
+        let subscriber = create_subscriber();
 
-        destinations.subscribe(foo.clone(), None, into_subscriber(client.clone()));
+        destinations.subscribe(foo.clone(), None, into_subscriber(subscriber));
 
         yield_now().await;
+
+        let sender = create_sender();
 
         destinations.send(
             foo,
@@ -263,7 +248,7 @@ mod test {
                 sender_message_id: Some(forty_two),
                 body: Vec::new(),
             },
-            into_sender(client),
+            into_sender(sender),
         );
 
         // Check all expected destinations were "created"
@@ -303,11 +288,11 @@ mod test {
         ))
         .await;
 
-        destinations.subscribe(foo, Some(sub_id_foo), into_subscriber(create_client()));
+        destinations.subscribe(foo, Some(sub_id_foo), into_subscriber(create_subscriber()));
 
         yield_now().await;
 
-        destinations.subscribe(bar, Some(sub_id_bar), into_subscriber(create_client()));
+        destinations.subscribe(bar, Some(sub_id_bar), into_subscriber(create_subscriber()));
 
         yield_now().await;
 
@@ -341,22 +326,22 @@ mod test {
         destinations.subscribe(
             foo.clone(),
             Some(sub_id_foo.clone()),
-            into_subscriber(create_client()),
+            into_subscriber(create_subscriber()),
         );
 
         destinations.subscribe(
             foo.clone(),
             Some(sub_id_foo.clone()),
-            into_subscriber(create_client()),
+            into_subscriber(create_subscriber()),
         );
 
         destinations.subscribe(
             foo.clone(),
             Some(sub_id_foo.clone()),
-            into_subscriber(create_client()),
+            into_subscriber(create_subscriber()),
         );
 
-        destinations.subscribe(foo, Some(sub_id_foo), into_subscriber(create_client()));
+        destinations.subscribe(foo, Some(sub_id_foo), into_subscriber(create_subscriber()));
 
         yield_now().await;
 

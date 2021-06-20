@@ -226,38 +226,21 @@ impl InMemDestination {
 
 #[cfg(test)]
 mod test {
-    use super::super::mocks::MockTestClient;
+    use super::super::mocks::*;
     use super::*;
     use std::sync::{Arc, RwLock};
 
     use tokio::task::yield_now;
-    use tungstenite::Message;
 
-    fn into_sender(client: Arc<MockTestClient>) -> Arc<dyn Sender> {
-        client
-    }
-
-    fn into_subscriber(client: Arc<MockTestClient>) -> Arc<dyn Subscriber> {
-        client
-    }
-
-    fn create_client() -> Arc<MockTestClient> {
-        let mut mock_client = Arc::new(MockTestClient::new());
-        Arc::get_mut(&mut mock_client)
-            .unwrap()
-            .expect_into_subscriber()
-            .returning(|| into_subscriber(Arc::new(MockTestClient::new())));
-        mock_client
-    }
     #[tokio::test]
     async fn destination_calls_subscribe_callback() {
         let foo = DestinationId::from("foo");
         let sub_id = SubscriptionId::from("bar");
         let destination = InMemDestination::create(&foo);
 
-        let mut client = create_client();
+        let mut subscriber = create_subscriber();
         let sub_id_for_closure = sub_id.clone();
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -271,7 +254,7 @@ mod test {
             })
             .return_const(());
 
-        destination.subscribe(Some(sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(sub_id), into_subscriber(subscriber));
         drop(destination);
 
         yield_now().await;
@@ -289,8 +272,8 @@ mod test {
 
         let destination = InMemDestination::create(&foo);
 
-        let mut client = create_client();
-        Arc::get_mut(&mut client)
+        let mut subscriber = create_subscriber();
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -307,17 +290,17 @@ mod test {
                         .unwrap_or(false)
             })
             .return_const(());
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_unsubscribe_callback()
             .times(1)
             .return_const(());
 
-        destination.subscribe(Some(subscriber_sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(subscriber_sub_id), into_subscriber(subscriber.clone()));
         yield_now().await;
         destination.unsubscribe(
             sub_id.try_read().unwrap().as_ref().unwrap().clone(),
-            into_subscriber(client.clone()),
+            into_subscriber(subscriber),
         );
         yield_now().await;
     }
@@ -329,21 +312,21 @@ mod test {
 
         let destination = InMemDestination::create(&foo);
 
-        let mut client = create_client();
-        Arc::get_mut(&mut client)
+        let mut sender = create_sender();
+        Arc::get_mut(&mut sender)
             .unwrap()
             .expect_send_callback()
             .times(1)
             .return_const(());
 
-        destination.subscribe(Some(sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(sub_id), into_subscriber(create_subscriber()));
 
         destination.send(
             InboundMessage {
                 sender_message_id: Some(MessageId::from("msg-1")),
                 body: "Slartibartfast rules".as_bytes().to_owned(),
             },
-            into_sender(client),
+            into_sender(sender),
         );
 
         yield_now().await;
@@ -361,8 +344,8 @@ mod test {
         let sub_id_for_closure = sub_id.clone();
         let sender_sub_id_for_closure = sender_sub_id.clone();
 
-        let mut client = create_client();
-        Arc::get_mut(&mut client)
+        let mut subscriber = create_subscriber();
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -375,12 +358,14 @@ mod test {
                 ()
             });
 
-        Arc::get_mut(&mut client)
+        let mut sender = create_sender();
+
+        Arc::get_mut(&mut sender)
             .unwrap()
             .expect_send_callback()
             .return_const(());
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_send()
             .times(1)
@@ -392,13 +377,13 @@ mod test {
             })
             .return_const(Ok(()));
 
-        destination.subscribe(Some(sender_sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(sender_sub_id), into_subscriber(subscriber.clone()));
         destination.send(
             InboundMessage {
                 sender_message_id: Some(MessageId::from("my_msg")),
                 body: "Hello, World 42".as_bytes().to_owned(),
             },
-            into_sender(client.clone()),
+            into_sender(sender),
         );
 
         yield_now().await;
@@ -411,10 +396,10 @@ mod test {
         destination.close();
         yield_now().await;
 
-        let mut client = create_client();
+        let mut subscriber = create_subscriber();
         let sender_sub_id = SubscriptionId::from("false");
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -427,7 +412,7 @@ mod test {
             })
             .return_const(());
 
-        destination.subscribe(Some(sender_sub_id), into_subscriber(client));
+        destination.subscribe(Some(sender_sub_id), into_subscriber(subscriber));
         yield_now().await;
     }
 
@@ -438,11 +423,11 @@ mod test {
         destination.close();
         yield_now().await;
 
-        let mut client = create_client();
+        let mut sender = create_sender();
 
         let message_id = MessageId::from("foo");
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut sender)
             .unwrap()
             .expect_send_callback()
             .times(1)
@@ -457,7 +442,7 @@ mod test {
             sender_message_id: Some(message_id),
             body: vec![],
         };
-        destination.send(message, into_sender(client));
+        destination.send(message, into_sender(sender));
         yield_now().await;
     }
 
@@ -468,17 +453,17 @@ mod test {
         destination.close();
         yield_now().await;
 
-        let mut client = create_client();
+        let mut subscriber = create_subscriber();
         let sender_sub_id = SubscriptionId::from("false");
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_unsubscribe_callback()
             .times(1)
             .withf(move |sub_id, result| sub_id.is_none() && result.is_err())
             .return_const(());
 
-        destination.unsubscribe(sender_sub_id, into_subscriber(client));
+        destination.unsubscribe(sender_sub_id, into_subscriber(subscriber));
         yield_now().await;
     }
 }

@@ -1,19 +1,45 @@
-use crate::destinations::{Sender, Subscriber};
-use std::sync::Arc;
+use futures::FutureExt;
+use std::{
+    future::{ready, Future},
+    pin::Pin,
+};
 
-/// A proxy for a client which can subscribe to destinations, receive messages and send messages.
-///
-/// Note that a client must also implement [destinations::Subscriber](crate::destinations::Subscriber) and [destinations::Sender](crate::destinations::Sender),
-/// which define the bulk of the API.
-pub trait Client: Subscriber + Sender + Sync + Send {
-    /// Allows error messages to be send to the client
-    fn error(&self, message: &str);
+use crate::error::StomperError;
 
-    /// Exposes self as a Sender.
-    fn into_sender(self: Arc<Self>) -> Arc<dyn Sender>;
+const DEFAULT_SERVER: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-    /// Exposes self as a Subscriber.
-    fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
+pub trait Client: Sync + Send + Clone {
+    fn server(&self) -> Option<String> {
+        Some(DEFAULT_SERVER.to_owned())
+    }
 
-    fn send_heartbeat(&self);
+    fn session(&self) -> Option<String> {
+        None
+    }
+}
+
+pub trait ClientFactory<C: Client>: Sync + Send {
+    fn create(
+        &mut self,
+        login: Option<&str>,
+        passcode: Option<&str>,
+    ) -> Pin<Box<dyn Future<Output = Result<C, StomperError>> + Send + 'static>>;
+}
+
+#[derive(Clone)]
+pub struct NoopClient {}
+
+impl Client for NoopClient {}
+
+pub struct NoopClientFactory {}
+
+impl ClientFactory<NoopClient> for NoopClientFactory {
+    fn create(
+        &mut self,
+        login: Option<&str>,
+        passcode: Option<&str>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<NoopClient, StomperError>> + Send + 'static>>
+    {
+        ready(Ok(NoopClient {})).boxed()
+    }
 }

@@ -1,6 +1,6 @@
 use crate::framework::*;
 
-use std::{convert::TryFrom, pin::Pin};
+use std::{convert::TryFrom, pin::Pin, thread::sleep};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
@@ -11,6 +11,7 @@ use stomp_parser::{
     },
     server::ServerFrame,
 };
+use tokio::task::yield_now;
 
 #[tokio::test]
 async fn connect_accepts_expected_heartbeat() {
@@ -32,7 +33,7 @@ fn connect_replies_connected(
 
         send_data(&in_sender, connect);
 
-        tokio::task::yield_now().await;
+        yield_now().await;
 
         assert_receive(&mut out_receiver, |bytes| {
             match ServerFrame::try_from(bytes) {
