@@ -62,11 +62,9 @@ fn expect_heartbeat(
     async move {
         sleep_in_pause(5050).await;
 
-        println!("Hearbeat: {}", out_receiver.recv().now_or_never().is_some());
-
-        // assert_receive(&mut out_receiver, |bytes| {
-        //     matches!(&*bytes, b"\n" | b"\r\n")
-        // });
+        assert_receive(&mut out_receiver, |bytes| {
+            matches!(&*bytes, b"\n" | b"\r\n")
+        });
 
         (in_sender, out_receiver)
     }

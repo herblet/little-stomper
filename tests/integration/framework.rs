@@ -1,4 +1,4 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{convert::TryFrom, pin::Pin, sync::Arc, time::Duration};
 
 use futures::{
     future::{join, ready},
@@ -11,7 +11,11 @@ use little_stomper::{
     },
     client::DefaultClientFactory,
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use stomp_parser::server::ServerFrame;
+use tokio::{
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    task::yield_now,
+};
 
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -51,6 +55,17 @@ pub fn send_data<T: std::fmt::Display>(in_sender: &InSender, data: T) {
     in_sender
         .send(Ok(data.to_string().into_bytes()))
         .expect("Connect failed");
+}
+
+pub fn send<T: std::fmt::Display + Send + 'static>(data: T) -> impl BehaviourFunction {
+    |in_sender, out_receiver| {
+        async {
+            send_data(&in_sender, data);
+            yield_now().await;
+            (in_sender, out_receiver)
+        }
+        .boxed()
+    }
 }
 
 pub async fn test_client_expectations<T: BehaviourFunction>(client_behaviour: T) {
@@ -99,7 +114,49 @@ pub fn assert_receive<T: FnOnce(Vec<u8>) -> bool>(
     }
 }
 
+pub fn receive<T: FnOnce(Vec<u8>) -> bool + Send + 'static>(
+    message_matcher: T,
+) -> impl BehaviourFunction {
+    |in_sender, mut out_receiver| {
+        async {
+            assert_receive(&mut out_receiver, message_matcher);
+            (in_sender, out_receiver)
+        }
+        .boxed()
+    }
+}
+
 pub fn sleep_in_pause(millis: u64) -> impl Future<Output = ()> {
     tokio::time::pause();
     tokio::time::sleep(Duration::from_millis(millis)).inspect(|_| tokio::time::resume())
+}
+
+pub fn wait_for_disconnect(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        sleep_in_pause(5050).await;
+
+        assert!(matches!(out_receiver.recv().now_or_never(), Some(None)));
+        (in_sender, out_receiver)
+    }
+    .boxed()
+}
+
+pub fn expect_error_and_disconnect(
+    in_sender: InSender,
+    out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    expect_error.then(wait_for_disconnect)(in_sender, out_receiver)
+}
+
+pub fn expect_error(
+    in_sender: InSender,
+    out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    receive(|bytes| matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_))))(
+        in_sender,
+        out_receiver,
+    )
 }

@@ -54,6 +54,25 @@ async fn error_after_missed_heartbeat() {
     test_client_expectations(connect_replies_connected.then(wait_for_error)).await;
 }
 
+pub fn wait_for_error(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        // nothing yet
+        assert!(matches!(out_receiver.recv().now_or_never(), None));
+
+        sleep_in_pause(6500).await;
+
+        assert_receive(&mut out_receiver, |bytes| {
+            matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_)))
+        });
+
+        (in_sender, out_receiver)
+    }
+    .boxed()
+}
+
 #[tokio::test]
 async fn disconnects_after_error() {
     test_client_expectations(
@@ -73,6 +92,21 @@ async fn connection_lingers() {
             .then(wait_for_disconnect),
     )
     .await;
+}
+
+fn wait_and_check_alive(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        sleep_in_pause(100).await;
+
+        // We did not receive a message from now_or_never; a disconnect would be Some(None)
+        assert!(matches!(out_receiver.recv().now_or_never(), None));
+
+        (in_sender, out_receiver)
+    }
+    .boxed()
 }
 
 #[tokio::test]
@@ -135,52 +169,6 @@ fn send_hearbeat(
         // No error
         assert!(matches!(out_receiver.recv().now_or_never(), None));
 
-        (in_sender, out_receiver)
-    }
-    .boxed()
-}
-
-fn wait_for_error(
-    in_sender: InSender,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
-    async move {
-        // nothing yet
-        assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        sleep_in_pause(6500).await;
-
-        assert_receive(&mut out_receiver, |bytes| {
-            matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_)))
-        });
-
-        (in_sender, out_receiver)
-    }
-    .boxed()
-}
-
-fn wait_and_check_alive(
-    in_sender: InSender,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
-    async move {
-        sleep_in_pause(100).await;
-
-        assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        (in_sender, out_receiver)
-    }
-    .boxed()
-}
-
-fn wait_for_disconnect(
-    in_sender: InSender,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
-    async move {
-        sleep_in_pause(5050).await;
-
-        assert!(matches!(out_receiver.recv().now_or_never(), Some(None)));
         (in_sender, out_receiver)
     }
     .boxed()
