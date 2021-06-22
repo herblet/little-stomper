@@ -33,7 +33,7 @@ pub trait Client: Sync + Send + Clone {
     }
 }
 
-/// A factory which allows creation of a single instance of it's parameter type, which must implement [`Client`].
+/// A factory which allows creation of a single instance of its parameter type, which must implement [`Client`].
 ///
 /// It passes the  the `login` and `passcode` headers from the [`stomp_parser::client::ConnectFrame`] so that the library user may use them as appropriate.
 ///
