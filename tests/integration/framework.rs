@@ -9,7 +9,7 @@ use little_stomper::{
         client::ClientSession, destinations::AsyncDestinations, inmemory::InMemDestination,
         mpsc_sink::UnboundedSenderSink,
     },
-    client::NoopClientFactory,
+    client::DefaultClientFactory,
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -63,7 +63,7 @@ pub async fn test_client_expectations<T: BehaviourFunction>(client_behaviour: T)
         Box::pin(UnboundedReceiverStream::new(in_receiver)),
         Box::pin(UnboundedSenderSink::from(out_sender)),
         destinations,
-        NoopClientFactory {},
+        DefaultClientFactory {},
     )
     .boxed();
 

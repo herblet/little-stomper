@@ -9,11 +9,11 @@ use crate::error::StomperError;
 use either::Either;
 use futures::sink::Sink;
 use futures::stream::{once, Stream};
-use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 
 use futures::stream::select_all::select_all;
 use log::info;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::future::ready;
 use std::future::Future;
 use std::pin::Pin;
@@ -24,7 +24,6 @@ use stomp_parser::headers::*;
 use stomp_parser::server::*;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tungstenite::connect;
 
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -406,7 +405,7 @@ where
             Box<dyn Sink<Vec<u8>, Error = StomperError> + Sync + Send + 'static>,
         >,
         destinations: T,
-        mut client_factory: F,
+        client_factory: F,
     ) -> impl Future<Output = Result<(), StomperError>> + Send + 'static {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -618,31 +617,6 @@ where
             }
         }
     }
-}
-
-fn initiate_connection(
-    requested_hearbeat: &HeartBeatIntervalls,
-    response_sink: &mut Pin<Box<dyn Sink<Vec<u8>, Error = StomperError> + Sync + Send + 'static>>,
-) -> (u32, u32) {
-    let server_heatbeat = requested_hearbeat.expected;
-
-    let client_heartbeat = requested_hearbeat.supplied;
-
-    response_sink.send(
-        ConnectedFrame::new(
-            VersionValue::new(StompVersion::V1_2),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(
-                server_heatbeat,
-                client_heartbeat,
-            ))),
-            None,
-            None,
-        )
-        .to_string()
-        .into_bytes(),
-    );
-
-    (server_heatbeat, client_heartbeat)
 }
 
 fn is_heartbeat(bytes: &[u8]) -> bool {

@@ -1,6 +1,6 @@
 use crate::framework::*;
 
-use std::{convert::TryFrom, pin::Pin, thread::sleep};
+use std::{convert::TryFrom, pin::Pin};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
