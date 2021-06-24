@@ -43,10 +43,10 @@ pub trait Client: Sync + Send + Clone {
 /// An implementation for functions and closures with the same singature as [`ClientFactory::create`] is provided.
 pub trait ClientFactory<C: Client>: Sync + Send {
     /// Returns a future yielding the [`Client`] instance, consuming the factory.
-    fn create(
+    fn create<'a>(
         self,
-        login: Option<&str>,
-        passcode: Option<&str>,
+        login: Option<&'a str>,
+        passcode: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<C, StomperError>> + Send + 'static>>;
 }
 
@@ -80,10 +80,10 @@ impl Client for DefaultClient {}
 pub struct DefaultClientFactory;
 
 impl ClientFactory<DefaultClient> for DefaultClientFactory {
-    fn create(
+    fn create<'a>(
         self,
-        _login: Option<&str>,
-        _passcode: Option<&str>,
+        _login: Option<&'a str>,
+        _passcode: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<DefaultClient, StomperError>> + Send + 'static>>
     {
         ready(Ok(DefaultClient {})).boxed()

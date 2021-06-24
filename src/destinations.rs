@@ -1,5 +1,6 @@
+use std::ops::Deref;
+
 use crate::error::StomperError;
-use std::borrow::Borrow;
 
 string_id_class!(SubscriptionId);
 
@@ -41,10 +42,6 @@ pub trait Subscriber: Send + Sync + std::fmt::Debug {
     ) -> Result<(), StomperError>;
 }
 
-pub trait BorrowedSubscriber: Borrow<dyn Subscriber> + Send + 'static {}
-
-impl<T: Borrow<dyn Subscriber> + Send + 'static> BorrowedSubscriber for T {}
-
 pub trait Sender: Send + Sync + std::fmt::Debug {
     fn send_callback(
         &self,
@@ -53,44 +50,59 @@ pub trait Sender: Send + Sync + std::fmt::Debug {
     );
 }
 
-pub trait BorrowedSender: Borrow<dyn Sender> + Send + 'static {}
-
-impl<T: Borrow<dyn Sender> + Send + 'static> BorrowedSender for T {}
-
 /// A destinations is a identifiable resource that clients can subscribe to, and send messages to
 pub trait Destination: Send + Clone {
-    fn subscribe<T: BorrowedSubscriber>(
+    type Client: crate::client::Client;
+
+    fn subscribe<S: Subscriber + 'static, D: Deref<Target = S> + Send + Clone + 'static>(
         &self,
         sender_subscription_id: Option<SubscriptionId>,
-        subscriber: T,
+        subscriber: D,
+        client: &Self::Client,
     );
-    fn unsubscribe<T: BorrowedSubscriber>(&self, sub_id: SubscriptionId, subscriber: T);
 
-    fn send<T: BorrowedSender>(&self, message: InboundMessage, sender: T);
+    fn unsubscribe<S: Subscriber + 'static, D: Deref<Target = S> + Send + Clone + 'static>(
+        &self,
+        sub_id: SubscriptionId,
+        subscriber: D,
+        client: &Self::Client,
+    );
+
+    fn send<S: Sender + 'static, D: Deref<Target = S> + Send + Clone + 'static>(
+        &self,
+        message: InboundMessage,
+        sender: D,
+        client: &Self::Client,
+    );
 
     fn close(&self);
 }
 
 pub trait Destinations: Send + Clone {
-    fn subscribe<T: BorrowedSubscriber>(
+    type Client: crate::client::Client;
+
+    fn subscribe<S: Subscriber + 'static, D: Deref<Target = S> + Clone + Send + 'static>(
         &self,
         destination: DestinationId,
         sender_subscription_id: Option<SubscriptionId>,
-        client: T,
+        subscriber: D,
+        client: &Self::Client,
     );
 
-    fn unsubscribe<T: BorrowedSubscriber>(
+    fn unsubscribe<S: Subscriber + 'static, D: Deref<Target = S> + Clone + Send + 'static>(
         &self,
         destination: DestinationId,
         destination_subscription_id: SubscriptionId,
-        client: T,
+        subscriber: D,
+        client: &Self::Client,
     );
 
     /// Send a message to this destination and, by implication, all clients subscribed to it
-    fn send<T: BorrowedSender>(
+    fn send<S: Sender + 'static, D: Deref<Target = S> + Clone + Send + 'static>(
         &self,
         destination: DestinationId,
         message: InboundMessage,
-        sender: T,
+        sender: D,
+        client: &Self::Client,
     );
 }

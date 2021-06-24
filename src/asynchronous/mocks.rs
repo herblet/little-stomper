@@ -1,15 +1,19 @@
 #![cfg(test)]
 
-use std::sync::Arc;
-
+use crate::client::DefaultClient;
 use crate::destinations::*;
 use crate::error::StomperError;
+use std::ops::Deref;
+use std::sync::Arc;
 
 use mockall::{mock, predicate::*};
 
 mock! {
     pub TestSubscriber {}
 
+    impl Clone for TestSubscriber {
+         fn clone(&self) -> Self;
+    }
 
     impl Subscriber for TestSubscriber {
         fn subscribe_callback(
@@ -41,6 +45,10 @@ mock! {
 mock! {
     pub TestSender {}
 
+     impl Clone for TestSender {
+         fn clone(&self) -> Self;
+    }
+
     impl Sender for TestSender {
         fn send_callback(&self, sender_message_id: Option<MessageId>, result: Result<MessageId, StomperError>);
     }
@@ -54,10 +62,12 @@ mock! {
     pub TestDest{}
 
     impl Destination for TestDest {
-        fn subscribe<T: BorrowedSubscriber>(&self, subscriber_sub_id: Option<SubscriptionId>, subscriber: T);
-        fn unsubscribe<T: BorrowedSubscriber>(&self, sub_id: SubscriptionId, subscriber: T);
+        type Client = DefaultClient;
 
-        fn send<T: BorrowedSender>(&self, message: InboundMessage, sender: T);
+        fn subscribe<S: Subscriber + 'static, D: Deref<Target = S> + Send + Clone + 'static>(&self, subscriber_sub_id: Option<SubscriptionId>, subscriber: D, client: &DefaultClient);
+        fn unsubscribe<S: Subscriber + 'static, D: Deref<Target = S> + Send + Clone + 'static>(&self, sub_id: SubscriptionId, subscriber: D, client: &DefaultClient);
+
+        fn send<S: Sender + 'static, D: Deref<Target = S> + Send + Clone + 'static>(&self, message: InboundMessage, sender: D, client: &DefaultClient);
 
         fn close(&self);
     }
@@ -71,16 +81,8 @@ mock! {
     }
 }
 
-pub fn into_sender(sender: Arc<MockTestSender>) -> Arc<dyn Sender + 'static> {
-    sender
-}
-
 pub fn create_sender() -> Arc<MockTestSender> {
     Arc::new(MockTestSender::new())
-}
-
-pub fn into_subscriber(subscriber: Arc<MockTestSubscriber>) -> Arc<dyn Subscriber + 'static> {
-    subscriber
 }
 
 pub fn create_subscriber() -> Arc<MockTestSubscriber> {

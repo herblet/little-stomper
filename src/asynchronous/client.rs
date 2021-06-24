@@ -221,32 +221,30 @@ fn state_frame_result(
     ready(Ok((state, Some(Either::Left(frame))))).boxed()
 }
 
-pub struct ClientSession<T, C>
+pub struct ClientSession<T>
 where
     T: Destinations + 'static,
-    C: Client + 'static,
 {
     destinations: T,
-    client_proxy: Arc<AsyncStompClient>,
+    client_proxy: AsyncStompClient,
     active_subscriptions_by_client_id: HashMap<SubscriptionId, (DestinationId, SubscriptionId)>,
     server_heartbeat_resetter: ResettableTimerResetter,
     client_heartbeat_resetter: ResettableTimerResetter,
-    client: C,
+    client: T::Client,
 }
 
-impl<T, C> ClientSession<T, C>
+impl<T> ClientSession<T>
 where
     T: Destinations + 'static,
-    C: Client + 'static,
 {
     fn new(
         destinations: T,
-        client_proxy: Arc<AsyncStompClient>,
+        client_proxy: AsyncStompClient,
         server_heartbeat_resetter: ResettableTimerResetter,
 
         client_heartbeat_resetter: ResettableTimerResetter,
-        client: C,
-    ) -> ClientSession<T, C> {
+        client: T::Client,
+    ) -> ClientSession<T> {
         ClientSession {
             destinations,
             client_proxy,
@@ -270,7 +268,8 @@ where
                 self.destinations.unsubscribe(
                     destination_id.clone(),
                     destination_sub_id.clone(),
-                    self.client_proxy.clone().into_subscriber(),
+                    Box::new(self.client_proxy.clone()),
+                    &self.client,
                 );
                 ready(Ok((ClientState::Alive, None))).boxed()
             }
@@ -419,7 +418,7 @@ where
                 .transpose(),
         )
     }
-    pub fn process_stream<F: ClientFactory<C> + 'static>(
+    pub fn process_stream<F: ClientFactory<T::Client> + 'static>(
         stream: RawClientStream,
         server_frame_sink: Pin<
             Box<dyn Sink<Vec<u8>, Error = StomperError> + Sync + Send + 'static>,
@@ -477,11 +476,15 @@ where
             .forward(server_frame_sink)
     }
 
-    fn validate_and_connect<F: ClientFactory<C> + 'static>(
+    fn validate_and_connect<F: ClientFactory<T::Client> + 'static>(
         first_message: Option<ClientEvent>,
         client_factory: F,
     ) -> Pin<
-        Box<dyn Future<Output = Result<(HeartBeatIntervalls, C), StomperError>> + Send + 'static>,
+        Box<
+            dyn Future<Output = Result<(HeartBeatIntervalls, T::Client), StomperError>>
+                + Send
+                + 'static,
+        >,
     > {
         match first_message {
             Some(ClientEvent::ClientFrame(Ok(ClientFrame::Connect(connect_frame)))) => {
@@ -517,7 +520,7 @@ where
     }
 
     fn handle_connection_validation_result<S: ClientStream>(
-        first_result: Result<(HeartBeatIntervalls, C), StomperError>,
+        first_result: Result<(HeartBeatIntervalls, T::Client), StomperError>,
         destinations: T,
         stream_from_client: S,
     ) -> impl Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
@@ -533,7 +536,7 @@ where
             .left_stream()
         } else {
             let (tx, rx) = mpsc::unbounded_channel();
-            let client_proxy = Arc::new(AsyncStompClient::create(tx));
+            let client_proxy = AsyncStompClient::create(tx);
 
             let (heartbeat_requested, client) = first_result.unwrap();
 
@@ -618,7 +621,8 @@ where
                 self.destinations.subscribe(
                     DestinationId(frame.destination.value().clone()),
                     Some(SubscriptionId::from(frame.id.value())),
-                    self.client_proxy.clone().into_subscriber(),
+                    Box::new(self.client_proxy.clone()),
+                    &self.client,
                 );
                 ready(Ok((ClientState::Alive, None))).boxed()
             }
@@ -630,7 +634,8 @@ where
                         sender_message_id: None,
                         body: frame.body().unwrap().to_owned(),
                     },
-                    self.client_proxy.clone().into_sender(),
+                    Box::new(self.client_proxy.clone()),
+                    &self.client,
                 );
                 ready(Ok((ClientState::Alive, None))).boxed()
             }

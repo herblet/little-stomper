@@ -1,19 +1,28 @@
+use crate::client::DefaultClient;
 use crate::destinations::*;
 use crate::error::StomperError;
 
 use async_map::{AsyncMap, VersionedMap};
 
+use std::ops::Deref;
 use std::sync::Arc;
 
 use futures::FutureExt;
 
 pub trait DestinationType:
-    Destination + Send + Unpin + Sync + Clone + std::fmt::Debug + 'static
+    Destination<Client = DefaultClient> + Send + Unpin + Sync + Clone + std::fmt::Debug + 'static
 {
 }
 
-impl<T: Destination + Send + Unpin + Sync + Clone + std::fmt::Debug + 'static> DestinationType
-    for T
+impl<
+        T: Destination<Client = DefaultClient>
+            + Send
+            + Unpin
+            + Sync
+            + Clone
+            + std::fmt::Debug
+            + 'static,
+    > DestinationType for T
 {
 }
 
@@ -24,12 +33,16 @@ pub struct AsyncDestinations<D: DestinationType> {
 }
 
 impl<D: DestinationType> Destinations for AsyncDestinations<D> {
-    fn subscribe<T: BorrowedSubscriber>(
+    type Client = D::Client;
+
+    fn subscribe<S: Subscriber + 'static, E: Deref<Target = S> + Clone + Send + 'static>(
         &self,
         destination: DestinationId,
         subscriber_sub_id: Option<SubscriptionId>,
-        client: T,
+        subscriber: E,
+        client: &Self::Client,
     ) {
+        let client = client.clone();
         tokio::task::spawn(
             self.destinations
                 .get(
@@ -37,24 +50,25 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
                     self.destination_factory.clone()
                         as Arc<dyn Fn(&DestinationId) -> D + Send + Sync>,
                 )
-                .inspect(|destination| {
-                    destination.subscribe(subscriber_sub_id, client);
+                .inspect(move |destination| {
+                    destination.subscribe(subscriber_sub_id, subscriber, &client);
                 }),
         );
     }
 
-    fn send<T: BorrowedSender>(
+    fn send<S: Sender + 'static, E: Deref<Target = S> + Clone + Send + 'static>(
         &self,
         destination: DestinationId,
         message: InboundMessage,
-        sender: T,
+        sender: E,
+        client: &Self::Client,
     ) {
         // Clone it, so that potential updates don't affect this copy
         // let destinations = self.cloned_dest();
         if let Some(destination) = self.destinations.get_if_present(&destination) {
-            destination.send(message, sender);
+            destination.send(message, sender, client);
         } else {
-            sender.borrow().send_callback(
+            sender.send_callback(
                 message.sender_message_id,
                 Err(StomperError::new(
                     format!("Unknown destination '{}'", destination).as_str(),
@@ -62,14 +76,15 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
             );
         }
     }
-    fn unsubscribe<T: BorrowedSubscriber>(
+    fn unsubscribe<S: Subscriber + 'static, E: Deref<Target = S> + Clone + Send + 'static>(
         &self,
         destination: DestinationId,
         subscription: SubscriptionId,
-        subscriber: T,
+        subscriber: E,
+        client: &Self::Client,
     ) {
         if let Some(destination) = self.destinations.get_if_present(&destination) {
-            destination.unsubscribe(subscription, subscriber);
+            destination.unsubscribe(subscription, subscriber, client);
         } else {
             log::info!("Requested unsubscribe for unknown destination");
         }
@@ -92,8 +107,10 @@ mod test {
 
     use super::super::mocks::*;
     use super::AsyncDestinations;
+    use crate::client::DefaultClient;
     use crate::destinations::*;
 
+    use std::ops::Deref;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
 
@@ -103,23 +120,32 @@ mod test {
 
     // Turn an Arc<Destination> into a Destination
     impl<A: Destination + std::marker::Sync> Destination for Arc<A> {
-        fn subscribe<T>(&self, subscriber_sub_id: Option<SubscriptionId>, subscriber: T)
-        where
-            T: BorrowedSubscriber,
-        {
-            self.as_ref().subscribe(subscriber_sub_id, subscriber)
+        type Client = A::Client;
+
+        fn subscribe<S: Subscriber + 'static, E: Deref<Target = S> + Clone + Send + 'static>(
+            &self,
+            subscriber_sub_id: Option<SubscriptionId>,
+            subscriber: E,
+            client: &Self::Client,
+        ) {
+            self.as_ref()
+                .subscribe(subscriber_sub_id, subscriber, client)
         }
-        fn unsubscribe<T>(&self, sub: SubscriptionId, subscriber: T)
-        where
-            T: BorrowedSubscriber,
-        {
-            self.as_ref().unsubscribe(sub, subscriber)
+        fn unsubscribe<S: Subscriber + 'static, E: Deref<Target = S> + Clone + Send + 'static>(
+            &self,
+            sub: SubscriptionId,
+            subscriber: E,
+            client: &Self::Client,
+        ) {
+            self.as_ref().unsubscribe(sub, subscriber, client)
         }
-        fn send<T>(&self, message: InboundMessage, sender: T)
-        where
-            T: BorrowedSender,
-        {
-            self.as_ref().send(message, sender)
+        fn send<S: Sender + 'static, E: Deref<Target = S> + Clone + Send + 'static>(
+            &self,
+            message: InboundMessage,
+            sender: E,
+            client: &Self::Client,
+        ) {
+            self.as_ref().send(message, sender, client)
         }
         fn close(&self) {
             self.as_ref().close()
@@ -139,8 +165,8 @@ mod test {
         map: &mut Arc<RwLock<HashMap<DestinationId, Arc<MockTestDest>>>>,
     ) {
         let mut dest = MockTestDest::new();
-        dest.expect_subscribe::<Arc<dyn Subscriber>>()
-            .withf(move |subscriber_sub_id, _| {
+        dest.expect_subscribe::<MockTestSubscriber, Arc<MockTestSubscriber>>()
+            .withf(move |subscriber_sub_id, _, _| {
                 counter.fetch_add(1, Ordering::Release);
                 subscriber_sub_id
                     .as_ref()
@@ -159,11 +185,11 @@ mod test {
         map: &mut Arc<RwLock<HashMap<DestinationId, Arc<MockTestDest>>>>,
     ) -> Arc<MockTestDest> {
         let mut dest = MockTestDest::new();
-        dest.expect_subscribe::<Arc<dyn Subscriber>>()
+        dest.expect_subscribe::<MockTestSubscriber, &MockTestSubscriber>()
             .return_const(());
 
-        dest.expect_send::<Arc<dyn Sender>>()
-            .withf(move |message, _| {
+        dest.expect_send::<MockTestSender, Arc<MockTestSender>>()
+            .withf(move |message, _, _| {
                 counter.fetch_add(1, Ordering::Release);
                 message
                     .sender_message_id
@@ -201,7 +227,7 @@ mod test {
 
         let subscriber = create_subscriber();
 
-        destinations.subscribe(foo, Some(sub_id), into_subscriber(subscriber));
+        destinations.subscribe(foo, Some(sub_id), subscriber, &DefaultClient);
 
         yield_now().await;
 
@@ -236,7 +262,7 @@ mod test {
 
         let subscriber = create_subscriber();
 
-        destinations.subscribe(foo.clone(), None, into_subscriber(subscriber));
+        destinations.subscribe(foo.clone(), None, subscriber.clone(), &DefaultClient);
 
         yield_now().await;
 
@@ -248,7 +274,8 @@ mod test {
                 sender_message_id: Some(forty_two),
                 body: Vec::new(),
             },
-            into_sender(sender),
+            sender,
+            &DefaultClient,
         );
 
         // Check all expected destinations were "created"
@@ -288,11 +315,11 @@ mod test {
         ))
         .await;
 
-        destinations.subscribe(foo, Some(sub_id_foo), into_subscriber(create_subscriber()));
+        destinations.subscribe(foo, Some(sub_id_foo), create_subscriber(), &DefaultClient);
 
         yield_now().await;
 
-        destinations.subscribe(bar, Some(sub_id_bar), into_subscriber(create_subscriber()));
+        destinations.subscribe(bar, Some(sub_id_bar), create_subscriber(), &DefaultClient);
 
         yield_now().await;
 
@@ -326,22 +353,25 @@ mod test {
         destinations.subscribe(
             foo.clone(),
             Some(sub_id_foo.clone()),
-            into_subscriber(create_subscriber()),
+            create_subscriber(),
+            &DefaultClient,
         );
 
         destinations.subscribe(
             foo.clone(),
             Some(sub_id_foo.clone()),
-            into_subscriber(create_subscriber()),
+            create_subscriber(),
+            &DefaultClient,
         );
 
         destinations.subscribe(
             foo.clone(),
             Some(sub_id_foo.clone()),
-            into_subscriber(create_subscriber()),
+            create_subscriber(),
+            &DefaultClient,
         );
 
-        destinations.subscribe(foo, Some(sub_id_foo), into_subscriber(create_subscriber()));
+        destinations.subscribe(foo, Some(sub_id_foo), create_subscriber(), &DefaultClient);
 
         yield_now().await;
 
