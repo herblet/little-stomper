@@ -24,7 +24,7 @@ fn connect_replies_connected(
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
         let connect = ConnectFrame::new(
-            HostValue::new("here".to_owned()),
+            HostValue::new("here"),
             AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
             Some(HeartBeatValue::new(HeartBeatIntervalls::new(0, 5000))),
             None,
@@ -94,16 +94,10 @@ fn subscribe_send_receive(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let foo = DestinationValue::new("foo".to_owned());
+        let foo = DestinationValue::new("foo");
         send_data(
             &in_sender,
-            SubscribeFrame::new(
-                foo.clone(),
-                IdValue::new("sub".to_owned()),
-                None,
-                None,
-                Vec::new(),
-            ),
+            SubscribeFrame::new(foo.clone(), IdValue::new("sub"), None, None, Vec::new()),
         );
 
         sleep_in_pause(2000).await;

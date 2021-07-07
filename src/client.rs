@@ -43,30 +43,32 @@ pub trait Client: Sync + Send + Clone {
 /// An implementation for functions and closures with the same singature as [`ClientFactory::create`] is provided.
 pub trait ClientFactory<C: Client>: Sync + Send {
     /// Returns a future yielding the [`Client`] instance, consuming the factory.
-    fn create<'a>(
+    fn create<T: AsRef<str>, S: AsRef<str>>(
         self,
-        login: Option<&'a str>,
-        passcode: Option<&'a str>,
+        login: Option<T>,
+        passcode: Option<S>,
     ) -> Pin<Box<dyn Future<Output = Result<C, StomperError>> + Send + 'static>>;
 }
 
-impl<
-        C: Client,
-        F: FnOnce(
-                Option<&str>,
-                Option<&str>,
-            )
-                -> Pin<Box<dyn Future<Output = Result<C, StomperError>> + Send + 'static>>
-            + Sync
-            + Send,
-    > ClientFactory<C> for F
+impl<C, F> ClientFactory<C> for F
+where
+    F: FnOnce(
+            Option<&str>,
+            Option<&str>,
+        ) -> Pin<Box<dyn Future<Output = Result<C, StomperError>> + Send + 'static>>
+        + Sync
+        + Send,
+    C: Client,
 {
-    fn create(
+    fn create<S: AsRef<str>, T: AsRef<str>>(
         self,
-        login: Option<&str>,
-        passcode: Option<&str>,
+        login: Option<S>,
+        passcode: Option<T>,
     ) -> Pin<Box<dyn Future<Output = Result<C, StomperError>> + Send + 'static>> {
-        self(login, passcode)
+        self(
+            login.as_ref().map(S::as_ref),
+            passcode.as_ref().map(T::as_ref),
+        )
     }
 }
 
@@ -80,10 +82,10 @@ impl Client for DefaultClient {}
 pub struct DefaultClientFactory;
 
 impl ClientFactory<DefaultClient> for DefaultClientFactory {
-    fn create<'a>(
+    fn create<S: AsRef<str>, T: AsRef<str>>(
         self,
-        _login: Option<&'a str>,
-        _passcode: Option<&'a str>,
+        _login: Option<S>,
+        _passcode: Option<T>,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<DefaultClient, StomperError>> + Send + 'static>>
     {
         ready(Ok(DefaultClient {})).boxed()

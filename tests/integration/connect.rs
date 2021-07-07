@@ -16,7 +16,7 @@ use stomp_parser::{
 async fn connect_defaults() {
     test_client_expectations(
         send(ConnectFrame::new(
-            HostValue::new("here".to_owned()),
+            HostValue::new("here"),
             AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
             None,
             None,
@@ -27,7 +27,7 @@ async fn connect_defaults() {
                 connected.version == VersionValue::new(StompVersion::V1_2)
                     && connected.server
                         == Some(ServerValue::new(
-                            "little-stomper/".to_owned() + env!("CARGO_PKG_VERSION"),
+                            &("little-stomper/".to_owned() + env!("CARGO_PKG_VERSION")),
                         ))
                     && connected.session.is_none()
                     && connected.heartbeat
@@ -50,7 +50,7 @@ fn unsupported_stomp_version_errors(
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
         let connect = ConnectFrame::new(
-            HostValue::new("here".to_owned()),
+            HostValue::new("here"),
             AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_1])),
             None,
             None,
@@ -83,10 +83,10 @@ async fn first_message_not_connect() {
     test_client_expectations(send(subscribe_frame()).then(expect_error_and_disconnect)).await;
 }
 
-fn subscribe_frame() -> SubscribeFrame {
+fn subscribe_frame() -> SubscribeFrame<'static> {
     SubscribeFrame::new(
-        DestinationValue::new("foo".to_owned()),
-        IdValue::new("MySub".to_owned()),
+        DestinationValue::new("foo"),
+        IdValue::new("MySub"),
         None,
         None,
         Vec::new(),

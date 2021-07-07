@@ -46,7 +46,7 @@ enum ClientEvent {
     Connected(HeartBeatIntervalls),
 
     /// A Frame from the client if received and parsed correctly, or Err if there was an error
-    ClientFrame(Result<ClientFrame, StomperError>),
+    ClientFrame(Result<ClientFrame<'static>, StomperError>),
 
     ClientHeartbeat,
 
@@ -178,22 +178,30 @@ impl AsyncStompClient {
 type ResultType = Pin<
     Box<
         dyn Future<
-                Output = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
+                Output = Result<
+                    (ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>),
+                    StomperError,
+                >,
             > + Send
             + 'static,
     >,
 >;
 
 trait ResultStream:
-    Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
-    + Send
+    Stream<
+        Item = Result<(ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>), StomperError>,
+    > + Send
     + 'static
 {
 }
 
 impl<
-        T: Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
-            + Send
+        T: Stream<
+                Item = Result<
+                    (ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>),
+                    StomperError,
+                >,
+            > + Send
             + 'static,
     > ResultStream for T
 {
@@ -204,13 +212,13 @@ trait ClientStream: Stream<Item = ClientEvent> + Send + Unpin + 'static {}
 
 impl<T: Stream<Item = ClientEvent> + Send + Unpin + 'static> ClientStream for T {}
 
-fn frame_result(frame: ServerFrame) -> ResultType {
+fn frame_result(frame: ServerFrame<'static>) -> ResultType {
     state_frame_result(ClientState::Alive, frame)
 }
 
 fn state_frame_result(
     state: ClientState,
-    frame: ServerFrame,
+    frame: ServerFrame<'static>,
 ) -> Pin<
     Box<
         dyn Future<
@@ -276,7 +284,7 @@ where
         }
     }
 
-    fn client_frame(&mut self, frame: Result<ClientFrame, StomperError>) -> ResultType {
+    fn client_frame(&mut self, frame: Result<ClientFrame<'static>, StomperError>) -> ResultType {
         match frame {
             Err(err) => self.error(&format!("Error processing client message: {:?}", err)),
             Ok(frame) => self.handle(frame).boxed(),
@@ -315,16 +323,17 @@ where
     ) -> ResultType {
         let raw_body = message.body;
 
-        let message = MessageFrame::new(
-            MessageIdValue::new(message.message_id.to_string()),
-            DestinationValue::new(message.destination.to_string()),
-            SubscriptionValue::new(client_subscription_id.to_string()),
-            Some(ContentTypeValue::new("text/plain".to_owned())),
-            Some(ContentLengthValue::new(raw_body.len() as u32)),
-            raw_body,
-        );
+        let mut builder = MessageFrameBuilder::new();
 
-        frame_result(ServerFrame::Message(message))
+        builder
+            .message_id(message.message_id.as_str())
+            .destination(message.destination.as_str())
+            .subscription(client_subscription_id.as_str())
+            .content_type("text/plain")
+            .content_length(raw_body.len() as u32)
+            .body(raw_body);
+
+        frame_result(ServerFrame::Message(builder.build().expect("")))
     }
 
     fn error(&mut self, message: &str) -> ResultType {
@@ -349,12 +358,22 @@ where
     fn handle_event(&mut self, event: ClientEvent) -> ResultType {
         match event {
             ClientEvent::Connected(heartbeat) => {
-                frame_result(ServerFrame::Connected(ConnectedFrame::new(
-                    VersionValue::new(StompVersion::V1_2),
-                    Some(heartbeat).map(HeartBeatValue::new),
-                    self.client.session().map(SessionValue::new),
-                    self.client.server().map(ServerValue::new),
-                )))
+                let mut builder = ConnectedFrameBuilder::new();
+
+                builder.version(StompVersion::V1_2).heartbeat(heartbeat);
+
+                let session = self.client.session();
+                if let Some(session) = session.as_ref() {
+                    builder.session(session);
+                }
+
+                if let Some(server) = self.client.server() {
+                    builder.server(&server);
+                }
+
+                let frame = builder.build().expect("");
+
+                frame_result(ServerFrame::Connected(frame))
             }
             ClientEvent::Close => ready(Ok((ClientState::Dead, None))).boxed(),
             ClientEvent::ClientFrame(result) => {
@@ -383,7 +402,9 @@ where
         .boxed()
     }
 
-    async fn parse_client_message(bytes: Vec<u8>) -> Result<Option<ClientFrame>, StomperError> {
+    async fn parse_client_message(
+        bytes: Vec<u8>,
+    ) -> Result<Option<ClientFrame<'static>>, StomperError> {
         if is_heartbeat(&*bytes) {
             Ok(None)
         } else {
@@ -400,7 +421,7 @@ where
     }
 
     fn into_opt_ok_of_bytes(
-        result: Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
+        result: Result<(ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>), StomperError>,
     ) -> impl Future<Output = Option<Result<Vec<u8>, StomperError>>> {
         ready(
             // Drop the ClientState, already handled
@@ -495,20 +516,17 @@ where
                 {
                     ready(Err(StomperError::new("Only STOMP 1.2 is supported"))).boxed()
                 } else {
+                    let login: Option<String> = connect_frame
+                        .login
+                        .map(|login_value| login_value.value().to_owned());
+                    let passcode: Option<String> = connect_frame
+                        .passcode
+                        .map(|passcode_value| passcode_value.value().to_owned());
+                    let heartbeat = connect_frame.heartbeat.value().clone();
+
                     client_factory
-                        .create(
-                            connect_frame
-                                .login
-                                .as_ref()
-                                .map(LoginValue::value)
-                                .map(String::as_str),
-                            connect_frame
-                                .passcode
-                                .as_ref()
-                                .map(PasscodeValue::value)
-                                .map(String::as_str),
-                        )
-                        .map_ok(move |client| (connect_frame.heartbeat.value().clone(), client))
+                        .create(login, passcode.as_ref())
+                        .map_ok(move |client| (heartbeat, client))
                         .boxed()
                 }
             }
@@ -523,8 +541,9 @@ where
         first_result: Result<(HeartBeatIntervalls, T::Client), StomperError>,
         destinations: T,
         stream_from_client: S,
-    ) -> impl Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
-           + Send {
+    ) -> impl Stream<
+        Item = Result<(ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>), StomperError>,
+    > + Send {
         if let Err(error) = first_result {
             //todo!("Send error response")
             once(ready(Ok((
@@ -613,13 +632,13 @@ where
         });
     }
 
-    fn handle(&mut self, frame: ClientFrame) -> ResultType {
+    fn handle(&mut self, frame: ClientFrame<'static>) -> ResultType {
         match frame {
             ClientFrame::Connect(_) => self.error("Already connected."),
 
             ClientFrame::Subscribe(frame) => {
                 self.destinations.subscribe(
-                    DestinationId(frame.destination.value().clone()),
+                    DestinationId(frame.destination.value().to_owned()),
                     Some(SubscriptionId::from(frame.id.value())),
                     Box::new(self.client_proxy.clone()),
                     &self.client,
@@ -629,7 +648,7 @@ where
 
             ClientFrame::Send(frame) => {
                 self.destinations.send(
-                    DestinationId(frame.destination.value().clone()),
+                    DestinationId(frame.destination.value().to_owned()),
                     InboundMessage {
                         sender_message_id: None,
                         body: frame.body().unwrap().to_owned(),
@@ -645,7 +664,7 @@ where
                 ready(Ok((ClientState::Dead, None))).boxed()
             }
             ClientFrame::Unsubscribe(frame) => {
-                self.unsubscribe(SubscriptionId(frame.id.value().clone()))
+                self.unsubscribe(SubscriptionId(frame.id.value().to_owned()))
             }
 
             ClientFrame::Abort(_frame) => {

@@ -321,6 +321,8 @@ mod test {
 
         drop(stream);
 
+        yield_now().await;
+
         resetter
             .reset()
             .expect_err("Should be an error because the other end is no longer listening");
