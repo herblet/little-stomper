@@ -30,5 +30,11 @@ macro_rules! string_id_class {
                 $name(String::from(input))
             }
         }
+
+        impl Into<String> for $name {
+            fn into(self) -> String {
+                self.0
+            }
+        }
     };
 }

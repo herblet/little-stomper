@@ -326,10 +326,10 @@ where
         let mut builder = MessageFrameBuilder::new();
 
         builder
-            .message_id(message.message_id.as_str())
-            .destination(message.destination.as_str())
-            .subscription(client_subscription_id.as_str())
-            .content_type("text/plain")
+            .message_id(message.message_id.into())
+            .destination(message.destination.into())
+            .subscription(client_subscription_id.into())
+            .content_type("text/plain".to_owned())
             .content_length(raw_body.len() as u32)
             .body(raw_body);
 
@@ -363,12 +363,12 @@ where
                 builder.version(StompVersion::V1_2).heartbeat(heartbeat);
 
                 let session = self.client.session();
-                if let Some(session) = session.as_ref() {
+                if let Some(session) = session {
                     builder.session(session);
                 }
 
                 if let Some(server) = self.client.server() {
-                    builder.server(&server);
+                    builder.server(server);
                 }
 
                 let frame = builder.build().expect("");
