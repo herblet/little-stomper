@@ -4,11 +4,8 @@ use std::{convert::TryFrom, pin::Pin};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
-    client::{ConnectFrame, SendFrame, SubscribeFrame},
-    headers::{
-        AcceptVersionValue, DestinationValue, HeaderValue, HeartBeatIntervalls, HeartBeatValue,
-        HostValue, IdValue, StompVersion, StompVersions,
-    },
+    client::{ConnectFrameBuilder, SendFrameBuilder, SubscribeFrameBuilder},
+    headers::{HeartBeatIntervalls, StompVersion, StompVersions},
     server::ServerFrame,
 };
 use tokio::task::yield_now;
@@ -23,13 +20,12 @@ fn connect_replies_connected(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let connect = ConnectFrame::new(
-            HostValue::new("here"),
-            AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(0, 5000))),
-            None,
-            None,
-        );
+        let connect = ConnectFrameBuilder::new()
+            .host("here".to_owned())
+            .accept_version(StompVersions(vec![StompVersion::V1_2]))
+            .heartbeat(HeartBeatIntervalls::new(0, 5000))
+            .build()
+            .unwrap();
 
         send_data(&in_sender, connect);
 
@@ -94,25 +90,26 @@ fn subscribe_send_receive(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let foo = DestinationValue::new("foo");
+        let foo = "foo".to_owned();
+
         send_data(
             &in_sender,
-            SubscribeFrame::new(foo.clone(), IdValue::new("sub"), None, None, Vec::new()),
+            SubscribeFrameBuilder::new()
+                .destination(foo.clone())
+                .id("sub".to_owned())
+                .build()
+                .unwrap(),
         );
 
         sleep_in_pause(2000).await;
 
         send_data(
             &in_sender,
-            SendFrame::new(
-                foo,
-                None,
-                None,
-                None,
-                None,
-                Vec::default(),
-                b"Hello, world!".to_vec(),
-            ),
+            SendFrameBuilder::new()
+                .destination(foo)
+                .body(b"Hello, world!".to_vec())
+                .build()
+                .unwrap(),
         );
 
         sleep_in_pause(1000).await;

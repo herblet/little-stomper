@@ -46,7 +46,7 @@ enum ClientEvent {
     Connected(HeartBeatIntervalls),
 
     /// A Frame from the client if received and parsed correctly, or Err if there was an error
-    ClientFrame(Result<ClientFrame<'static>, StomperError>),
+    ClientFrame(Result<ClientFrame, StomperError>),
 
     ClientHeartbeat,
 
@@ -178,30 +178,22 @@ impl AsyncStompClient {
 type ResultType = Pin<
     Box<
         dyn Future<
-                Output = Result<
-                    (ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>),
-                    StomperError,
-                >,
+                Output = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
             > + Send
             + 'static,
     >,
 >;
 
 trait ResultStream:
-    Stream<
-        Item = Result<(ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>), StomperError>,
-    > + Send
+    Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
+    + Send
     + 'static
 {
 }
 
 impl<
-        T: Stream<
-                Item = Result<
-                    (ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>),
-                    StomperError,
-                >,
-            > + Send
+        T: Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
+            + Send
             + 'static,
     > ResultStream for T
 {
@@ -212,13 +204,13 @@ trait ClientStream: Stream<Item = ClientEvent> + Send + Unpin + 'static {}
 
 impl<T: Stream<Item = ClientEvent> + Send + Unpin + 'static> ClientStream for T {}
 
-fn frame_result(frame: ServerFrame<'static>) -> ResultType {
+fn frame_result(frame: ServerFrame) -> ResultType {
     state_frame_result(ClientState::Alive, frame)
 }
 
 fn state_frame_result(
     state: ClientState,
-    frame: ServerFrame<'static>,
+    frame: ServerFrame,
 ) -> Pin<
     Box<
         dyn Future<
@@ -284,7 +276,7 @@ where
         }
     }
 
-    fn client_frame(&mut self, frame: Result<ClientFrame<'static>, StomperError>) -> ResultType {
+    fn client_frame(&mut self, frame: Result<ClientFrame, StomperError>) -> ResultType {
         match frame {
             Err(err) => self.error(&format!("Error processing client message: {:?}", err)),
             Ok(frame) => self.handle(frame).boxed(),
@@ -323,17 +315,17 @@ where
     ) -> ResultType {
         let raw_body = message.body;
 
-        let mut builder = MessageFrameBuilder::new();
-
-        builder
+        let message_frame = MessageFrameBuilder::new()
             .message_id(message.message_id.into())
             .destination(message.destination.into())
             .subscription(client_subscription_id.into())
             .content_type("text/plain".to_owned())
             .content_length(raw_body.len() as u32)
-            .body(raw_body);
+            .body(raw_body)
+            .build()
+            .expect("");
 
-        frame_result(ServerFrame::Message(builder.build().expect("")))
+        frame_result(ServerFrame::Message(message_frame))
     }
 
     fn error(&mut self, message: &str) -> ResultType {
@@ -358,17 +350,16 @@ where
     fn handle_event(&mut self, event: ClientEvent) -> ResultType {
         match event {
             ClientEvent::Connected(heartbeat) => {
-                let mut builder = ConnectedFrameBuilder::new();
+                let mut builder = ConnectedFrameBuilder::new()
+                    .version(StompVersion::V1_2)
+                    .heartbeat(heartbeat);
 
-                builder.version(StompVersion::V1_2).heartbeat(heartbeat);
-
-                let session = self.client.session();
-                if let Some(session) = session {
-                    builder.session(session);
+                if let Some(session) = self.client.session() {
+                    builder = builder.session(session);
                 }
 
                 if let Some(server) = self.client.server() {
-                    builder.server(server);
+                    builder = builder.server(server);
                 }
 
                 let frame = builder.build().expect("");
@@ -402,9 +393,7 @@ where
         .boxed()
     }
 
-    async fn parse_client_message(
-        bytes: Vec<u8>,
-    ) -> Result<Option<ClientFrame<'static>>, StomperError> {
+    async fn parse_client_message(bytes: Vec<u8>) -> Result<Option<ClientFrame>, StomperError> {
         if is_heartbeat(&*bytes) {
             Ok(None)
         } else {
@@ -421,7 +410,7 @@ where
     }
 
     fn into_opt_ok_of_bytes(
-        result: Result<(ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>), StomperError>,
+        result: Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
     ) -> impl Future<Output = Option<Result<Vec<u8>, StomperError>>> {
         ready(
             // Drop the ClientState, already handled
@@ -541,9 +530,8 @@ where
         first_result: Result<(HeartBeatIntervalls, T::Client), StomperError>,
         destinations: T,
         stream_from_client: S,
-    ) -> impl Stream<
-        Item = Result<(ClientState, Option<Either<ServerFrame<'static>, Vec<u8>>>), StomperError>,
-    > + Send {
+    ) -> impl Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
+           + Send {
         if let Err(error) = first_result {
             //todo!("Send error response")
             once(ready(Ok((
@@ -632,7 +620,7 @@ where
         });
     }
 
-    fn handle(&mut self, frame: ClientFrame<'static>) -> ResultType {
+    fn handle(&mut self, frame: ClientFrame) -> ResultType {
         match frame {
             ClientFrame::Connect(_) => self.error("Already connected."),
 

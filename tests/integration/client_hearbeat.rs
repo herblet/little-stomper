@@ -4,11 +4,8 @@ use std::{convert::TryFrom, pin::Pin};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
-    client::{ConnectFrame, SubscribeFrame},
-    headers::{
-        AcceptVersionValue, DestinationValue, HeaderValue, HeartBeatIntervalls, HeartBeatValue,
-        HostValue, IdValue, StompVersion, StompVersions,
-    },
+    client::{ConnectFrameBuilder, SubscribeFrameBuilder},
+    headers::{HeartBeatIntervalls, StompVersion, StompVersions},
     server::ServerFrame,
 };
 
@@ -22,13 +19,12 @@ fn connect_replies_connected(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let connect = ConnectFrame::new(
-            HostValue::new("here"),
-            AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(5000, 0))),
-            None,
-            None,
-        );
+        let connect = ConnectFrameBuilder::new()
+            .host("here".to_owned())
+            .accept_version(StompVersions(vec![StompVersion::V1_2]))
+            .heartbeat(HeartBeatIntervalls::new(5000, 0))
+            .build()
+            .unwrap();
 
         send_data(&in_sender, connect);
 
@@ -137,13 +133,11 @@ fn subscribe(
         sleep_in_pause(5000).await;
         send_data(
             &in_sender,
-            SubscribeFrame::new(
-                DestinationValue::new("foo"),
-                IdValue::new("MySub"),
-                None,
-                None,
-                Vec::new(),
-            ),
+            SubscribeFrameBuilder::new()
+                .destination("foo".to_owned())
+                .id("MySub".to_owned())
+                .build()
+                .unwrap(),
         );
         sleep_in_pause(2000).await;
 
