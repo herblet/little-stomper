@@ -5,10 +5,7 @@ use std::{convert::TryFrom, pin::Pin};
 use futures::{Future, FutureExt};
 use stomp_parser::{
     client::{ConnectFrameBuilder, SubscribeFrame, SubscribeFrameBuilder},
-    headers::{
-        AcceptVersionValue, DestinationValue, HeartBeatIntervalls, HeartBeatValue, HostValue,
-        IdValue, ServerValue, StompVersion, StompVersions, VersionValue,
-    },
+    headers::{HeartBeatIntervalls, HeartBeatValue, ServerValue, StompVersion, StompVersions},
     server::ServerFrame,
 };
 
@@ -16,11 +13,8 @@ use stomp_parser::{
 async fn connect_defaults() {
     test_client_expectations(
         send(
-            ConnectFrameBuilder::new()
-                .host("here".to_owned())
-                .accept_version(StompVersions(vec![StompVersion::V1_2]))
-                .build()
-                .unwrap(),
+            ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
+                .build(),
         )
         .then(receive(|bytes| match ServerFrame::try_from(bytes) {
             Ok(ServerFrame::Connected(connected)) => {
@@ -51,11 +45,9 @@ fn unsupported_stomp_version_errors(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let connect = ConnectFrameBuilder::new()
-            .host("here".to_owned())
-            .accept_version(StompVersions(vec![StompVersion::V1_1]))
-            .build()
-            .unwrap();
+        let connect =
+            ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_1]))
+                .build();
 
         send_data(&in_sender, connect);
 
@@ -84,9 +76,5 @@ async fn first_message_not_connect() {
 }
 
 fn subscribe_frame() -> SubscribeFrame {
-    SubscribeFrameBuilder::new()
-        .destination("foo".to_owned())
-        .id("MySub".to_owned())
-        .build()
-        .unwrap()
+    SubscribeFrameBuilder::new("foo".to_owned(), "MySub".to_owned()).build()
 }

@@ -315,15 +315,15 @@ where
     ) -> ResultType {
         let raw_body = message.body;
 
-        let message_frame = MessageFrameBuilder::new()
-            .message_id(message.message_id.into())
-            .destination(message.destination.into())
-            .subscription(client_subscription_id.into())
-            .content_type("text/plain".to_owned())
-            .content_length(raw_body.len() as u32)
-            .body(raw_body)
-            .build()
-            .expect("");
+        let message_frame = MessageFrameBuilder::new(
+            message.message_id.into(),
+            message.destination.into(),
+            client_subscription_id.into(),
+        )
+        .content_type("text/plain".to_owned())
+        .content_length(raw_body.len() as u32)
+        .body(raw_body)
+        .build();
 
         frame_result(ServerFrame::Message(message_frame))
     }
@@ -350,9 +350,8 @@ where
     fn handle_event(&mut self, event: ClientEvent) -> ResultType {
         match event {
             ClientEvent::Connected(heartbeat) => {
-                let mut builder = ConnectedFrameBuilder::new()
-                    .version(StompVersion::V1_2)
-                    .heartbeat(heartbeat);
+                let mut builder =
+                    ConnectedFrameBuilder::new(StompVersion::V1_2).heartbeat(heartbeat);
 
                 if let Some(session) = self.client.session() {
                     builder = builder.session(session);
@@ -362,7 +361,7 @@ where
                     builder = builder.server(server);
                 }
 
-                let frame = builder.build().expect("");
+                let frame = builder.build();
 
                 frame_result(ServerFrame::Connected(frame))
             }

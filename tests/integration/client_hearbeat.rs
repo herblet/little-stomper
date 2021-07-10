@@ -19,12 +19,10 @@ fn connect_replies_connected(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let connect = ConnectFrameBuilder::new()
-            .host("here".to_owned())
-            .accept_version(StompVersions(vec![StompVersion::V1_2]))
-            .heartbeat(HeartBeatIntervalls::new(5000, 0))
-            .build()
-            .unwrap();
+        let connect =
+            ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
+                .heartbeat(HeartBeatIntervalls::new(5000, 0))
+                .build();
 
         send_data(&in_sender, connect);
 
@@ -133,11 +131,7 @@ fn subscribe(
         sleep_in_pause(5000).await;
         send_data(
             &in_sender,
-            SubscribeFrameBuilder::new()
-                .destination("foo".to_owned())
-                .id("MySub".to_owned())
-                .build()
-                .unwrap(),
+            SubscribeFrameBuilder::new("foo".to_owned(), "MySub".to_owned()).build(),
         );
         sleep_in_pause(2000).await;
 
