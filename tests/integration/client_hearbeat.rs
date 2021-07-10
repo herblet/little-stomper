@@ -4,11 +4,8 @@ use std::{convert::TryFrom, pin::Pin};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
-    client::{ConnectFrame, SubscribeFrame},
-    headers::{
-        AcceptVersionValue, DestinationValue, HeaderValue, HeartBeatIntervalls, HeartBeatValue,
-        HostValue, IdValue, StompVersion, StompVersions,
-    },
+    client::{ConnectFrameBuilder, SubscribeFrameBuilder},
+    headers::{HeartBeatIntervalls, StompVersion, StompVersions},
     server::ServerFrame,
 };
 
@@ -22,13 +19,10 @@ fn connect_replies_connected(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let connect = ConnectFrame::new(
-            HostValue::new("here".to_owned()),
-            AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(5000, 0))),
-            None,
-            None,
-        );
+        let connect =
+            ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
+                .heartbeat(HeartBeatIntervalls::new(5000, 0))
+                .build();
 
         send_data(&in_sender, connect);
 
@@ -54,6 +48,25 @@ async fn error_after_missed_heartbeat() {
     test_client_expectations(connect_replies_connected.then(wait_for_error)).await;
 }
 
+pub fn wait_for_error(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        // nothing yet
+        assert!(matches!(out_receiver.recv().now_or_never(), None));
+
+        sleep_in_pause(6500).await;
+
+        assert_receive(&mut out_receiver, |bytes| {
+            matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_)))
+        });
+
+        (in_sender, out_receiver)
+    }
+    .boxed()
+}
+
 #[tokio::test]
 async fn disconnects_after_error() {
     test_client_expectations(
@@ -73,6 +86,21 @@ async fn connection_lingers() {
             .then(wait_for_disconnect),
     )
     .await;
+}
+
+fn wait_and_check_alive(
+    in_sender: InSender,
+    mut out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+    async move {
+        sleep_in_pause(100).await;
+
+        // We did not receive a message from now_or_never; a disconnect would be Some(None)
+        assert!(matches!(out_receiver.recv().now_or_never(), None));
+
+        (in_sender, out_receiver)
+    }
+    .boxed()
 }
 
 #[tokio::test]
@@ -103,13 +131,7 @@ fn subscribe(
         sleep_in_pause(5000).await;
         send_data(
             &in_sender,
-            SubscribeFrame::new(
-                DestinationValue::new("foo".to_owned()),
-                IdValue::new("MySub".to_owned()),
-                None,
-                None,
-                Vec::new(),
-            ),
+            SubscribeFrameBuilder::new("foo".to_owned(), "MySub".to_owned()).build(),
         );
         sleep_in_pause(2000).await;
 
@@ -135,52 +157,6 @@ fn send_hearbeat(
         // No error
         assert!(matches!(out_receiver.recv().now_or_never(), None));
 
-        (in_sender, out_receiver)
-    }
-    .boxed()
-}
-
-fn wait_for_error(
-    in_sender: InSender,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
-    async move {
-        // nothing yet
-        assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        sleep_in_pause(6500).await;
-
-        assert_receive(&mut out_receiver, |bytes| {
-            matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_)))
-        });
-
-        (in_sender, out_receiver)
-    }
-    .boxed()
-}
-
-fn wait_and_check_alive(
-    in_sender: InSender,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
-    async move {
-        sleep_in_pause(100).await;
-
-        assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        (in_sender, out_receiver)
-    }
-    .boxed()
-}
-
-fn wait_for_disconnect(
-    in_sender: InSender,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
-    async move {
-        sleep_in_pause(5050).await;
-
-        assert!(matches!(out_receiver.recv().now_or_never(), Some(None)));
         (in_sender, out_receiver)
     }
     .boxed()

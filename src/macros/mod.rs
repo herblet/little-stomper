@@ -4,6 +4,12 @@ macro_rules! string_id_class {
         #[derive(Clone, PartialEq, Eq, Hash, Debug)]
         pub struct $name(pub String);
 
+        impl $name {
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
         impl std::fmt::Display for $name {
             fn fmt(
                 &self,
@@ -22,6 +28,12 @@ macro_rules! string_id_class {
         impl From<&str> for $name {
             fn from(input: &str) -> $name {
                 $name(String::from(input))
+            }
+        }
+
+        impl Into<String> for $name {
+            fn into(self) -> String {
+                self.0
             }
         }
     };

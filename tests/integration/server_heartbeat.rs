@@ -4,13 +4,11 @@ use std::{convert::TryFrom, pin::Pin};
 
 use futures::{Future, FutureExt};
 use stomp_parser::{
-    client::{ConnectFrame, SendFrame, SubscribeFrame},
-    headers::{
-        AcceptVersionValue, DestinationValue, HeaderValue, HeartBeatIntervalls, HeartBeatValue,
-        HostValue, IdValue, StompVersion, StompVersions,
-    },
+    client::{ConnectFrameBuilder, SendFrameBuilder, SubscribeFrameBuilder},
+    headers::{HeartBeatIntervalls, StompVersion, StompVersions},
     server::ServerFrame,
 };
+use tokio::task::yield_now;
 
 #[tokio::test]
 async fn connect_accepts_expected_heartbeat() {
@@ -22,17 +20,14 @@ fn connect_replies_connected(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let connect = ConnectFrame::new(
-            HostValue::new("here".to_owned()),
-            AcceptVersionValue::new(StompVersions(vec![StompVersion::V1_2])),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(0, 5000))),
-            None,
-            None,
-        );
+        let connect =
+            ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
+                .heartbeat(HeartBeatIntervalls::new(0, 5000))
+                .build();
 
         send_data(&in_sender, connect);
 
-        tokio::task::yield_now().await;
+        yield_now().await;
 
         assert_receive(&mut out_receiver, |bytes| {
             match ServerFrame::try_from(bytes) {
@@ -61,11 +56,9 @@ fn expect_heartbeat(
     async move {
         sleep_in_pause(5050).await;
 
-        println!("Hearbeat: {}", out_receiver.recv().now_or_never().is_some());
-
-        // assert_receive(&mut out_receiver, |bytes| {
-        //     matches!(&*bytes, b"\n" | b"\r\n")
-        // });
+        assert_receive(&mut out_receiver, |bytes| {
+            matches!(&*bytes, b"\n" | b"\r\n")
+        });
 
         (in_sender, out_receiver)
     }
@@ -95,31 +88,20 @@ fn subscribe_send_receive(
     mut out_receiver: OutReceiver,
 ) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
     async move {
-        let foo = DestinationValue::new("foo".to_owned());
+        let foo = "foo".to_owned();
+
         send_data(
             &in_sender,
-            SubscribeFrame::new(
-                foo.clone(),
-                IdValue::new("sub".to_owned()),
-                None,
-                None,
-                Vec::new(),
-            ),
+            SubscribeFrameBuilder::new(foo.clone(), "sub".to_owned()).build(),
         );
 
         sleep_in_pause(2000).await;
 
         send_data(
             &in_sender,
-            SendFrame::new(
-                foo,
-                None,
-                None,
-                None,
-                None,
-                Vec::default(),
-                b"Hello, world!".to_vec(),
-            ),
+            SendFrameBuilder::new(foo)
+                .body(b"Hello, world!".to_vec())
+                .build(),
         );
 
         sleep_in_pause(1000).await;

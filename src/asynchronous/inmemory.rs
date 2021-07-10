@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 
+use crate::client::DefaultClient;
 use crate::destinations::*;
 use crate::error::StomperError;
 
@@ -11,22 +13,62 @@ use uuid::Uuid;
 struct Subscription {
     id: SubscriptionId,
     subscriber_sub_id: Option<SubscriptionId>,
-    subscriber: Box<dyn BorrowedSubscriber>,
+    send_fn: SendFn,
 }
 
 impl Subscription {
     pub fn send(&self, message: OutboundMessage) -> Result<(), StomperError> {
-        (&*self.subscriber)
-            .borrow()
-            .send(self.id.clone(), self.subscriber_sub_id.clone(), message)
+        (self.send_fn)(self.id.clone(), self.subscriber_sub_id.clone(), message)
     }
+}
+
+type SubscribeCallback = Box<
+    dyn FnOnce(DestinationId, Option<SubscriptionId>, Result<SubscriptionId, StomperError>)
+        + Send
+        + 'static,
+>;
+
+fn to_subscribe_callback<S: Subscriber, D: Deref<Target = S> + Send + Clone + 'static>(
+    subscriber: D,
+) -> SubscribeCallback {
+    Box::new(move |x, y, z| subscriber.subscribe_callback(x, y, z))
+}
+
+type SendFn = Box<
+    dyn Fn(SubscriptionId, Option<SubscriptionId>, OutboundMessage) -> Result<(), StomperError>
+        + Send
+        + 'static,
+>;
+
+fn to_send_fn<S: Subscriber, D: Deref<Target = S> + Send + Clone + 'static>(
+    subscriber: D,
+) -> SendFn {
+    Box::new(move |x, y, z| subscriber.send(x, y, z))
+}
+
+type UnsubscribeCallback =
+    Box<dyn Fn(Option<SubscriptionId>, Result<SubscriptionId, StomperError>) + Send + 'static>;
+
+fn to_unsubscribe_callback<S: Subscriber, D: Deref<Target = S> + Send + Clone + 'static>(
+    subscriber: D,
+) -> UnsubscribeCallback {
+    Box::new(move |x, y| subscriber.unsubscribe_callback(x, y))
+}
+
+type SendCallback =
+    Box<dyn Fn(Option<MessageId>, Result<MessageId, StomperError>) + Send + 'static>;
+
+fn to_send_callback<S: Sender, D: Deref<Target = S> + Send + Clone + 'static>(
+    sender: D,
+) -> SendCallback {
+    Box::new(move |x, y| sender.send_callback(x, y))
 }
 
 /// An action that a destination can perform
 enum DestinationAction {
-    Subscribe(Option<SubscriptionId>, Box<dyn BorrowedSubscriber>),
-    Unsubscribe(SubscriptionId, Box<dyn BorrowedSubscriber>),
-    Send(InboundMessage, Box<dyn BorrowedSender>),
+    Subscribe(Option<SubscriptionId>, SubscribeCallback, SendFn),
+    Unsubscribe(SubscriptionId, UnsubscribeCallback),
+    Send(InboundMessage, SendCallback),
     Close,
 }
 
@@ -47,22 +89,27 @@ impl InMemDestination {
 }
 
 impl Destination for InMemDestination {
-    fn subscribe<T: BorrowedSubscriber>(
+    type Client = DefaultClient;
+
+    fn subscribe<S: Subscriber, D: Deref<Target = S> + Send + Clone + 'static>(
         &self,
         sender_subscription_id: Option<SubscriptionId>,
-        subscriber: T,
+        subscriber: D,
+        _: &Self::Client,
     ) {
         match self.perform_action(DestinationAction::Subscribe(
             sender_subscription_id,
-            Box::new(subscriber),
+            to_subscribe_callback(subscriber.clone()),
+            to_send_fn(subscriber),
         )) {
             Err(err) => {
                 if let mpsc::error::SendError(DestinationAction::Subscribe(
                     sender_subscription_id,
-                    subscriber,
+                    subscribe_callback,
+                    _,
                 )) = err
                 {
-                    (&*subscriber).borrow().subscribe_callback(
+                    subscribe_callback(
                         self.id.clone(),
                         sender_subscription_id,
                         Err(StomperError::new("Subscribe failed")),
@@ -73,11 +120,17 @@ impl Destination for InMemDestination {
         }
     }
 
-    fn send<T: BorrowedSender>(&self, message: InboundMessage, sender: T) {
-        match self.perform_action(DestinationAction::Send(message, Box::new(sender))) {
+    fn send<S: Sender, D: Deref<Target = S> + Send + Clone + 'static>(
+        &self,
+        message: InboundMessage,
+        sender: D,
+        _: &Self::Client,
+    ) {
+        match self.perform_action(DestinationAction::Send(message, to_send_callback(sender))) {
             Err(err) => {
-                if let mpsc::error::SendError(DestinationAction::Send(message, sender)) = err {
-                    (&*sender).borrow().send_callback(
+                if let mpsc::error::SendError(DestinationAction::Send(message, send_callback)) = err
+                {
+                    send_callback(
                         message.sender_message_id,
                         Err(StomperError::new("Send failed")),
                     );
@@ -87,13 +140,23 @@ impl Destination for InMemDestination {
         }
     }
 
-    fn unsubscribe<T: BorrowedSubscriber>(&self, sub_id: SubscriptionId, subscriber: T) {
-        match self.perform_action(DestinationAction::Unsubscribe(sub_id, Box::new(subscriber))) {
+    fn unsubscribe<S: Subscriber, D: Deref<Target = S> + Send + Clone + 'static>(
+        &self,
+        sub_id: SubscriptionId,
+        subscriber: D,
+        _: &Self::Client,
+    ) {
+        match self.perform_action(DestinationAction::Unsubscribe(
+            sub_id,
+            to_unsubscribe_callback(subscriber),
+        )) {
             Err(err) => {
-                if let mpsc::error::SendError(DestinationAction::Unsubscribe(_, subscriber)) = err {
-                    (&*subscriber)
-                        .borrow()
-                        .unsubscribe_callback(None, Err(StomperError::new("Unsubscribe failed")));
+                if let mpsc::error::SendError(DestinationAction::Unsubscribe(
+                    _,
+                    unsubscribe_callback,
+                )) = err
+                {
+                    unsubscribe_callback(None, Err(StomperError::new("Unsubscribe failed")));
                 }
             }
             Ok(_) => { /* do nothing */ }
@@ -127,14 +190,14 @@ impl InMemDestinationBackend {
     async fn listen_on(mut self, mut receiver: mpsc::UnboundedReceiver<DestinationAction>) {
         while let Some(action) = receiver.recv().await {
             match action {
-                DestinationAction::Subscribe(subscriber_sub_id, borrowed_subscriber) => {
-                    self.add_subscription(subscriber_sub_id, borrowed_subscriber);
+                DestinationAction::Subscribe(subscriber_sub_id, subscribe_callback, send_fn) => {
+                    self.add_subscription(subscriber_sub_id, subscribe_callback, send_fn);
                 }
-                DestinationAction::Unsubscribe(sub_id, borrowed_subscriber) => {
-                    self.remove_subscription(sub_id, borrowed_subscriber);
+                DestinationAction::Unsubscribe(sub_id, unsubscribe_callback) => {
+                    self.remove_subscription(sub_id, unsubscribe_callback);
                 }
-                DestinationAction::Send(message, borrowed_sender) => {
-                    self.send(message, borrowed_sender);
+                DestinationAction::Send(message, send_callback) => {
+                    self.send(message, send_callback);
                 }
                 DestinationAction::Close => {
                     log::info!("Closing destination '{}'", self.id);
@@ -149,7 +212,8 @@ impl InMemDestinationBackend {
     fn add_subscription(
         &mut self,
         subscriber_sub_id: Option<SubscriptionId>,
-        subscriber: Box<dyn BorrowedSubscriber>,
+        subscriber: SubscribeCallback,
+        send_fn: SendFn,
     ) {
         let id = SubscriptionId(Uuid::new_v4().to_string());
 
@@ -158,31 +222,27 @@ impl InMemDestinationBackend {
             Subscription {
                 id: id.clone(),
                 subscriber_sub_id,
-                subscriber,
+                send_fn,
             },
         );
 
         if let Some(subscription) = self.subscriptions.get(&id) {
-            (&*subscription.subscriber).borrow().subscribe_callback(
+            subscriber(
                 self.id.clone(),
                 subscription.subscriber_sub_id.clone(),
                 Ok(id),
             );
         }
     }
-    fn remove_subscription(
-        &mut self,
-        sub_id: SubscriptionId,
-        subscriber: Box<dyn BorrowedSubscriber>,
-    ) {
+    fn remove_subscription(&mut self, sub_id: SubscriptionId, unsub_callback: UnsubscribeCallback) {
         let subscription = self.subscriptions.remove(&sub_id);
-        (&*subscriber).borrow().unsubscribe_callback(
+        unsub_callback(
             subscription.and_then(|subscription| subscription.subscriber_sub_id),
             Ok(sub_id),
         );
     }
 
-    fn send(&mut self, message: InboundMessage, sender: Box<dyn BorrowedSender>) {
+    fn send(&mut self, message: InboundMessage, send_callback: SendCallback) {
         let message_id = MessageId(Uuid::new_v4().to_string());
 
         let out_message = OutboundMessage {
@@ -206,9 +266,7 @@ impl InMemDestinationBackend {
             self.subscriptions.remove(&sub_id);
         }
 
-        sender
-            .borrow()
-            .send_callback(message.sender_message_id, Ok(message_id));
+        send_callback(message.sender_message_id, Ok(message_id));
     }
 }
 
@@ -226,38 +284,21 @@ impl InMemDestination {
 
 #[cfg(test)]
 mod test {
-    use super::super::mocks::MockTestClient;
+    use super::super::mocks::*;
     use super::*;
     use std::sync::{Arc, RwLock};
 
     use tokio::task::yield_now;
-    use tungstenite::Message;
 
-    fn into_sender(client: Arc<MockTestClient>) -> Arc<dyn Sender> {
-        client
-    }
-
-    fn into_subscriber(client: Arc<MockTestClient>) -> Arc<dyn Subscriber> {
-        client
-    }
-
-    fn create_client() -> Arc<MockTestClient> {
-        let mut mock_client = Arc::new(MockTestClient::new());
-        Arc::get_mut(&mut mock_client)
-            .unwrap()
-            .expect_into_subscriber()
-            .returning(|| into_subscriber(Arc::new(MockTestClient::new())));
-        mock_client
-    }
     #[tokio::test]
     async fn destination_calls_subscribe_callback() {
         let foo = DestinationId::from("foo");
         let sub_id = SubscriptionId::from("bar");
         let destination = InMemDestination::create(&foo);
 
-        let mut client = create_client();
+        let mut subscriber = create_subscriber();
         let sub_id_for_closure = sub_id.clone();
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -271,7 +312,7 @@ mod test {
             })
             .return_const(());
 
-        destination.subscribe(Some(sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(sub_id), subscriber, &DefaultClient);
         drop(destination);
 
         yield_now().await;
@@ -289,8 +330,9 @@ mod test {
 
         let destination = InMemDestination::create(&foo);
 
-        let mut client = create_client();
-        Arc::get_mut(&mut client)
+        let mut subscriber = create_subscriber();
+
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -307,17 +349,19 @@ mod test {
                         .unwrap_or(false)
             })
             .return_const(());
-        Arc::get_mut(&mut client)
+
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_unsubscribe_callback()
             .times(1)
             .return_const(());
 
-        destination.subscribe(Some(subscriber_sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(subscriber_sub_id), subscriber.clone(), &DefaultClient);
         yield_now().await;
         destination.unsubscribe(
             sub_id.try_read().unwrap().as_ref().unwrap().clone(),
-            into_subscriber(client.clone()),
+            subscriber,
+            &DefaultClient,
         );
         yield_now().await;
     }
@@ -329,21 +373,22 @@ mod test {
 
         let destination = InMemDestination::create(&foo);
 
-        let mut client = create_client();
-        Arc::get_mut(&mut client)
+        let mut sender = create_sender();
+        Arc::get_mut(&mut sender)
             .unwrap()
             .expect_send_callback()
             .times(1)
             .return_const(());
 
-        destination.subscribe(Some(sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(sub_id), create_subscriber(), &DefaultClient);
 
         destination.send(
             InboundMessage {
                 sender_message_id: Some(MessageId::from("msg-1")),
                 body: "Slartibartfast rules".as_bytes().to_owned(),
             },
-            into_sender(client),
+            sender,
+            &DefaultClient,
         );
 
         yield_now().await;
@@ -361,8 +406,8 @@ mod test {
         let sub_id_for_closure = sub_id.clone();
         let sender_sub_id_for_closure = sender_sub_id.clone();
 
-        let mut client = create_client();
-        Arc::get_mut(&mut client)
+        let mut subscriber = create_subscriber();
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -375,12 +420,14 @@ mod test {
                 ()
             });
 
-        Arc::get_mut(&mut client)
+        let mut sender = create_sender();
+
+        Arc::get_mut(&mut sender)
             .unwrap()
             .expect_send_callback()
             .return_const(());
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_send()
             .times(1)
@@ -392,13 +439,14 @@ mod test {
             })
             .return_const(Ok(()));
 
-        destination.subscribe(Some(sender_sub_id), into_subscriber(client.clone()));
+        destination.subscribe(Some(sender_sub_id), subscriber, &DefaultClient);
         destination.send(
             InboundMessage {
                 sender_message_id: Some(MessageId::from("my_msg")),
                 body: "Hello, World 42".as_bytes().to_owned(),
             },
-            into_sender(client.clone()),
+            sender,
+            &DefaultClient,
         );
 
         yield_now().await;
@@ -411,10 +459,10 @@ mod test {
         destination.close();
         yield_now().await;
 
-        let mut client = create_client();
+        let mut subscriber = create_subscriber();
         let sender_sub_id = SubscriptionId::from("false");
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_subscribe_callback()
             .times(1)
@@ -427,7 +475,7 @@ mod test {
             })
             .return_const(());
 
-        destination.subscribe(Some(sender_sub_id), into_subscriber(client));
+        destination.subscribe(Some(sender_sub_id), subscriber, &DefaultClient);
         yield_now().await;
     }
 
@@ -438,11 +486,11 @@ mod test {
         destination.close();
         yield_now().await;
 
-        let mut client = create_client();
+        let mut sender = create_sender();
 
         let message_id = MessageId::from("foo");
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut sender)
             .unwrap()
             .expect_send_callback()
             .times(1)
@@ -457,7 +505,7 @@ mod test {
             sender_message_id: Some(message_id),
             body: vec![],
         };
-        destination.send(message, into_sender(client));
+        destination.send(message, sender, &DefaultClient);
         yield_now().await;
     }
 
@@ -468,17 +516,17 @@ mod test {
         destination.close();
         yield_now().await;
 
-        let mut client = create_client();
+        let mut subscriber = create_subscriber();
         let sender_sub_id = SubscriptionId::from("false");
 
-        Arc::get_mut(&mut client)
+        Arc::get_mut(&mut subscriber)
             .unwrap()
             .expect_unsubscribe_callback()
             .times(1)
             .withf(move |sub_id, result| sub_id.is_none() && result.is_err())
             .return_const(());
 
-        destination.unsubscribe(sender_sub_id, into_subscriber(client));
+        destination.unsubscribe(sender_sub_id, subscriber, &DefaultClient);
         yield_now().await;
     }
 }

@@ -174,7 +174,9 @@ impl ResettableTimer {
 
 impl Drop for ResettableTimer {
     fn drop(&mut self) {
-        self.task.take().unwrap().abort();
+        if let Some(task) = self.task.take() {
+            task.abort()
+        }
     }
 }
 
@@ -318,6 +320,8 @@ mod test {
         stream.next().now_or_never(); // Kick off the timer
 
         drop(stream);
+
+        yield_now().await;
 
         resetter
             .reset()

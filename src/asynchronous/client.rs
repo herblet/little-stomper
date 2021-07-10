@@ -1,5 +1,5 @@
 use crate::asynchronous::delayable_stream::ResettableTimer;
-use crate::client::Client;
+use crate::client::{Client, ClientFactory};
 use crate::destinations::{
     DestinationId, Destinations, InboundMessage, MessageId, OutboundMessage, Sender, Subscriber,
     SubscriptionId,
@@ -8,7 +8,7 @@ use crate::error::StomperError;
 
 use either::Either;
 use futures::sink::Sink;
-use futures::stream::Stream;
+use futures::stream::{once, Stream};
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 
 use futures::stream::select_all::select_all;
@@ -43,6 +43,8 @@ enum ClientState {
 
 /// And Event which a AsyncStompClient can receive
 enum ClientEvent {
+    Connected(HeartBeatIntervalls),
+
     /// A Frame from the client if received and parsed correctly, or Err if there was an error
     ClientFrame(Result<ClientFrame, StomperError>),
 
@@ -71,7 +73,23 @@ enum ClientEvent {
     Close,
 }
 
-#[derive(Debug)]
+/// A proxy for a client which can subscribe to destinations, receive messages and send messages.
+///
+/// Note that a client must also implement [destinations::Subscriber](crate::destinations::Subscriber) and [destinations::Sender](crate::destinations::Sender),
+/// which define the bulk of the API.
+trait ClientProxy: Subscriber + Sender + Sync + Send {
+    /// Allows error messages to be send to the client
+    fn error(&self, message: &str);
+
+    /// Exposes self as a Sender.
+    fn into_sender(self: Arc<Self>) -> Arc<dyn Sender>;
+
+    /// Exposes self as a Subscriber.
+    fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
+
+    fn send_heartbeat(&self);
+}
+#[derive(Debug, Clone)]
 pub struct AsyncStompClient {
     sender: UnboundedSender<ClientEvent>,
 }
@@ -134,7 +152,7 @@ impl Sender for AsyncStompClient {
     }
 }
 
-impl Client for AsyncStompClient {
+impl ClientProxy for AsyncStompClient {
     fn into_sender(self: Arc<Self>) -> Arc<(dyn Sender + 'static)> {
         self
     }
@@ -166,6 +184,26 @@ type ResultType = Pin<
     >,
 >;
 
+trait ResultStream:
+    Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
+    + Send
+    + 'static
+{
+}
+
+impl<
+        T: Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
+            + Send
+            + 'static,
+    > ResultStream for T
+{
+}
+
+type RawClientStream = Pin<Box<dyn Stream<Item = Result<Vec<u8>, StomperError>> + Send + 'static>>;
+trait ClientStream: Stream<Item = ClientEvent> + Send + Unpin + 'static {}
+
+impl<T: Stream<Item = ClientEvent> + Send + Unpin + 'static> ClientStream for T {}
+
 fn frame_result(frame: ServerFrame) -> ResultType {
     state_frame_result(ClientState::Alive, frame)
 }
@@ -188,10 +226,11 @@ where
     T: Destinations + 'static,
 {
     destinations: T,
-    client: Arc<AsyncStompClient>,
+    client_proxy: AsyncStompClient,
     active_subscriptions_by_client_id: HashMap<SubscriptionId, (DestinationId, SubscriptionId)>,
     server_heartbeat_resetter: ResettableTimerResetter,
     client_heartbeat_resetter: ResettableTimerResetter,
+    client: T::Client,
 }
 
 impl<T> ClientSession<T>
@@ -200,17 +239,19 @@ where
 {
     fn new(
         destinations: T,
-        client: Arc<AsyncStompClient>,
+        client_proxy: AsyncStompClient,
         server_heartbeat_resetter: ResettableTimerResetter,
 
         client_heartbeat_resetter: ResettableTimerResetter,
+        client: T::Client,
     ) -> ClientSession<T> {
         ClientSession {
             destinations,
-            client,
+            client_proxy,
             active_subscriptions_by_client_id: HashMap::new(),
             server_heartbeat_resetter,
             client_heartbeat_resetter,
+            client,
         }
     }
 
@@ -227,7 +268,8 @@ where
                 self.destinations.unsubscribe(
                     destination_id.clone(),
                     destination_sub_id.clone(),
-                    self.client.clone().into_subscriber(),
+                    Box::new(self.client_proxy.clone()),
+                    &self.client,
                 );
                 ready(Ok((ClientState::Alive, None))).boxed()
             }
@@ -273,51 +315,21 @@ where
     ) -> ResultType {
         let raw_body = message.body;
 
-        let message = MessageFrame::new(
-            MessageIdValue::new(message.message_id.to_string()),
-            DestinationValue::new(message.destination.to_string()),
-            SubscriptionValue::new(client_subscription_id.to_string()),
-            Some(ContentTypeValue::new("text/plain".to_owned())),
-            Some(ContentLengthValue::new(raw_body.len() as u32)),
-            raw_body,
-        );
+        let message_frame = MessageFrameBuilder::new(
+            message.message_id.into(),
+            message.destination.into(),
+            client_subscription_id.into(),
+        )
+        .content_type("text/plain".to_owned())
+        .content_length(raw_body.len() as u32)
+        .body(raw_body)
+        .build();
 
-        frame_result(ServerFrame::Message(message))
-    }
-
-    fn connected(&mut self, requested_hearbeat: &HeartBeatIntervalls) -> ResultType {
-        let server_heatbeat = requested_hearbeat.expected;
-
-        let client_heartbeat = requested_hearbeat.supplied;
-
-        if client_heartbeat > 0 {
-            let heartbeat_with_buffer = client_heartbeat * (HEARTBEAT_BUFFER_PERCENT + 100) / 100;
-
-            if let Err(err) = self
-                .client_heartbeat_resetter
-                .change_period(Duration::from_millis(heartbeat_with_buffer as u64))
-            {
-                log::error!("Error initialising client heartbeat: {:?}", err);
-            }
-        }
-
-        if server_heatbeat > 0 {
-            self.start_heartbeat(server_heatbeat);
-        }
-
-        frame_result(ServerFrame::Connected(ConnectedFrame::new(
-            VersionValue::new(StompVersion::V1_2),
-            Some(HeartBeatValue::new(HeartBeatIntervalls::new(
-                server_heatbeat,
-                client_heartbeat,
-            ))),
-            None,
-            None,
-        )))
+        frame_result(ServerFrame::Message(message_frame))
     }
 
     fn error(&mut self, message: &str) -> ResultType {
-        let client = self.client.clone();
+        let client = self.client_proxy.clone();
 
         frame_result(ServerFrame::Error(ErrorFrame::from_message(message)))
             .inspect(move |_| client.send_event(ClientEvent::Close))
@@ -337,6 +349,22 @@ where
 
     fn handle_event(&mut self, event: ClientEvent) -> ResultType {
         match event {
+            ClientEvent::Connected(heartbeat) => {
+                let mut builder =
+                    ConnectedFrameBuilder::new(StompVersion::V1_2).heartbeat(heartbeat);
+
+                if let Some(session) = self.client.session() {
+                    builder = builder.session(session);
+                }
+
+                if let Some(server) = self.client.server() {
+                    builder = builder.server(server);
+                }
+
+                let frame = builder.build();
+
+                frame_result(ServerFrame::Connected(frame))
+            }
             ClientEvent::Close => ready(Ok((ClientState::Dead, None))).boxed(),
             ClientEvent::ClientFrame(result) => {
                 self.client_message_received();
@@ -399,24 +427,19 @@ where
                 .transpose(),
         )
     }
-    pub fn process_stream(
-        stream: Pin<Box<dyn Stream<Item = Result<Vec<u8>, StomperError>> + Send + 'static>>,
+    pub fn process_stream<F: ClientFactory<T::Client> + 'static>(
+        stream: RawClientStream,
         server_frame_sink: Pin<
             Box<dyn Sink<Vec<u8>, Error = StomperError> + Sync + Send + 'static>,
         >,
         destinations: T,
+        client_factory: F,
     ) -> impl Future<Output = Result<(), StomperError>> + Send + 'static {
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let client = Arc::new(AsyncStompClient::create(tx));
-
         // Closes this session; will be chained to client stream to run after that ends
-        let close_stream = futures::stream::once(async { ClientEvent::Close });
-
-        let (client_heartbeat_stream, client_heartbeat_resetter) = ResettableTimer::default();
+        let close_stream = futures::stream::once(async { ClientEvent::Close }).boxed();
 
         let stream_from_client = stream
-            .and_then(Self::parse_client_message)
+            .and_then(|bytes| Self::parse_client_message(bytes).boxed())
             .map(|opt_frame| {
                 opt_frame
                     .transpose()
@@ -425,60 +448,165 @@ where
             })
             .chain(close_stream);
 
-        // This is the stream of events generated by processing on the server-side, rather than directly from the client
-        let stream_from_server = UnboundedReceiverStream::new(rx);
+        // the first message must be a connect frame
+        tokio::task::spawn(
+            stream_from_client
+                .into_future() // Split off the first message for individual handling
+                .then(|(first_message, stream_from_client)| {
+                    Self::validate_and_connect(first_message, client_factory).map(
+                        move |validation_result| {
+                            Self::handle_connection_validation_result(
+                                validation_result,
+                                destinations,
+                                stream_from_client,
+                            )
+                        },
+                    )
+                })
+                .then(move |stream| Self::process_response_stream(stream, server_frame_sink)),
+        )
+        .inspect(|_| info!("Client completing"))
+        .map_ok(|_| ()) // ignore the result from the forward.
+        .map_err(|_| StomperError::new("Unable to join response task"))
+    }
 
-        let (server_heartbeat_stream, server_heartbeat_resetter) = ResettableTimer::default();
-
-        let all_events = select_all(vec![
-            stream_from_client.boxed(),
-            stream_from_server.boxed(),
-            server_heartbeat_stream
-                .map(|_| ClientEvent::Heartbeat)
-                .boxed(),
-        ]);
-
-        let event_handler = {
-            let mut client_session = ClientSession::new(
-                destinations,
-                client,
-                server_heartbeat_resetter,
-                client_heartbeat_resetter,
-            );
-
-            client_session.start_heartbeat_listener(client_heartbeat_stream);
-
-            move |event| client_session.handle_event(event)
-        };
-
-        let all_events = all_events
-            .then(event_handler)
-            .inspect_err(Self::log_error)
-            .take_while(Self::not_dead)
+    fn process_response_stream<S: ResultStream>(
+        response_stream: S,
+        server_frame_sink: Pin<
+            Box<dyn Sink<Vec<u8>, Error = StomperError> + Sync + Send + 'static>,
+        >,
+    ) -> impl Future<Output = Result<(), StomperError>> {
+        response_stream
             .chain(futures::stream::once(async {
                 sleep(Duration::from_millis(LINGER_TIME)).await;
                 Err(StomperError::new("Closing stream"))
             }))
-            .filter_map(Self::into_opt_ok_of_bytes);
-
-        tokio::task::spawn(all_events.forward(server_frame_sink))
-            .inspect(|_| info!("Client completing"))
-            .map_ok(|_| ()) // ignore the result from the forward.
-            .map_err(|_| StomperError::new("Unable to join response task"))
+            .filter_map(Self::into_opt_ok_of_bytes)
+            .forward(server_frame_sink)
     }
 
-    fn start_heartbeat(&mut self, millis: u32) {
-        if let Err(err) = self
-            .server_heartbeat_resetter
-            .change_period(Duration::from_millis(millis as u64))
-        {
-            log::error!("Error starting heartbeat: {}", err);
+    fn validate_and_connect<F: ClientFactory<T::Client> + 'static>(
+        first_message: Option<ClientEvent>,
+        client_factory: F,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(HeartBeatIntervalls, T::Client), StomperError>>
+                + Send
+                + 'static,
+        >,
+    > {
+        match first_message {
+            Some(ClientEvent::ClientFrame(Ok(ClientFrame::Connect(connect_frame)))) => {
+                if !connect_frame
+                    .accept_version
+                    .value()
+                    .contains(&StompVersion::V1_2)
+                {
+                    ready(Err(StomperError::new("Only STOMP 1.2 is supported"))).boxed()
+                } else {
+                    let login: Option<String> = connect_frame
+                        .login
+                        .map(|login_value| login_value.value().to_owned());
+                    let passcode: Option<String> = connect_frame
+                        .passcode
+                        .map(|passcode_value| passcode_value.value().to_owned());
+                    let heartbeat = connect_frame.heartbeat.value().clone();
+
+                    client_factory
+                        .create(login, passcode.as_ref())
+                        .map_ok(move |client| (heartbeat, client))
+                        .boxed()
+                }
+            }
+            _ => ready(Err(StomperError::new(
+                "First message must be a CONNECT frame",
+            )))
+            .boxed(),
+        }
+    }
+
+    fn handle_connection_validation_result<S: ClientStream>(
+        first_result: Result<(HeartBeatIntervalls, T::Client), StomperError>,
+        destinations: T,
+        stream_from_client: S,
+    ) -> impl Stream<Item = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>>
+           + Send {
+        if let Err(error) = first_result {
+            //todo!("Send error response")
+            once(ready(Ok((
+                ClientState::Dead,
+                Some(Either::Left(ServerFrame::Error(ErrorFrame::from_message(
+                    &error.message,
+                )))),
+            ))))
+            .left_stream()
+        } else {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let client_proxy = AsyncStompClient::create(tx);
+
+            let (heartbeat_requested, client) = first_result.unwrap();
+
+            // This is the stream of events generated by processing on the server-side, rather than directly from the client
+            let stream_from_server = UnboundedReceiverStream::new(rx);
+
+            let (server_heartbeat_stream, server_heartbeat_resetter) = if heartbeat_requested
+                .expected
+                > 0
+            {
+                ResettableTimer::create(Duration::from_millis(heartbeat_requested.expected as u64))
+            } else {
+                ResettableTimer::default()
+            };
+
+            let all_events = once(ready(ClientEvent::Connected(HeartBeatIntervalls::new(
+                heartbeat_requested.expected,
+                heartbeat_requested.supplied,
+            ))))
+            .chain(select_all(vec![
+                stream_from_client.boxed(),
+                stream_from_server.boxed(),
+                server_heartbeat_stream
+                    .map(|_| ClientEvent::Heartbeat)
+                    .boxed(),
+            ]));
+
+            let (client_heartbeat_stream, client_heartbeat_resetter) =
+                if heartbeat_requested.supplied > 0 {
+                    let heartbeat_with_buffer =
+                        heartbeat_requested.supplied * (HEARTBEAT_BUFFER_PERCENT + 100) / 100;
+                    ResettableTimer::create(Duration::from_millis(heartbeat_with_buffer as u64))
+                } else {
+                    ResettableTimer::default()
+                };
+
+            let event_handler = {
+                let mut client_session = ClientSession::new(
+                    destinations,
+                    client_proxy,
+                    server_heartbeat_resetter,
+                    client_heartbeat_resetter,
+                    client,
+                );
+
+                client_session.start_heartbeat_listener(client_heartbeat_stream);
+
+                move |event| client_session.handle_event(event)
+            };
+
+            all_events
+                .then(event_handler)
+                .inspect_ok(|_| {
+                    log::debug!("Response");
+                })
+                .inspect_err(Self::log_error)
+                .take_while(Self::not_dead)
+                .right_stream()
         }
     }
 
     fn start_heartbeat_listener(&mut self, mut timer: ResettableTimer) {
         tokio::task::spawn({
-            let client = self.client.clone();
+            let client = self.client_proxy.clone();
 
             async move {
                 timer
@@ -493,31 +621,27 @@ where
 
     fn handle(&mut self, frame: ClientFrame) -> ResultType {
         match frame {
-            ClientFrame::Connect(frame) => {
-                if !frame.accept_version.value().contains(&StompVersion::V1_2) {
-                    self.error("Only STOMP 1.2 is supported")
-                } else {
-                    self.connected(frame.heartbeat.value())
-                }
-            }
+            ClientFrame::Connect(_) => self.error("Already connected."),
 
             ClientFrame::Subscribe(frame) => {
                 self.destinations.subscribe(
-                    DestinationId(frame.destination.value().clone()),
+                    DestinationId(frame.destination.value().to_owned()),
                     Some(SubscriptionId::from(frame.id.value())),
-                    self.client.clone().into_subscriber(),
+                    Box::new(self.client_proxy.clone()),
+                    &self.client,
                 );
                 ready(Ok((ClientState::Alive, None))).boxed()
             }
 
             ClientFrame::Send(frame) => {
                 self.destinations.send(
-                    DestinationId(frame.destination.value().clone()),
+                    DestinationId(frame.destination.value().to_owned()),
                     InboundMessage {
                         sender_message_id: None,
                         body: frame.body().unwrap().to_owned(),
                     },
-                    self.client.clone().into_sender(),
+                    Box::new(self.client_proxy.clone()),
+                    &self.client,
                 );
                 ready(Ok((ClientState::Alive, None))).boxed()
             }
@@ -527,7 +651,7 @@ where
                 ready(Ok((ClientState::Dead, None))).boxed()
             }
             ClientFrame::Unsubscribe(frame) => {
-                self.unsubscribe(SubscriptionId(frame.id.value().clone()))
+                self.unsubscribe(SubscriptionId(frame.id.value().to_owned()))
             }
 
             ClientFrame::Abort(_frame) => {
