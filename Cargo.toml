@@ -1,6 +1,6 @@
 [package]
 name = "little-stomper"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Toby Grasl <herblet@knowledge42.com>"]
 edition = "2018"
 description = "A crate provideing an implementation of the STOMP 1.2 protocol."
