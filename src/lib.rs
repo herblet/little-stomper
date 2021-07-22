@@ -7,7 +7,6 @@ extern crate log;
 
 pub mod asynchronous;
 pub mod test_utils;
-pub mod utils;
 // Must come before modules using the macros!
 mod macros;
 

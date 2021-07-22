@@ -1,8 +1,9 @@
 use std::{pin::Pin, sync::Arc};
 
+use sender_sink::wrappers::UnboundedSenderSink;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use futures::{Future, FutureExt};
+use futures::{Future, FutureExt, SinkExt};
 use little_stomper::{
     asynchronous::{
         client::ClientSession, destinations::AsyncDestinations, inmemory::InMemDestination,
@@ -10,7 +11,6 @@ use little_stomper::{
     client::DefaultClientFactory,
     error::StomperError,
     test_utils::{test_expectations, BehaviourFunction},
-    utils::UnboundedSenderSink,
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -27,7 +27,7 @@ fn create_client_session(
         .then(|destinations| {
             ClientSession::process_stream(
                 Box::pin(UnboundedReceiverStream::new(in_receiver)),
-                Box::pin(UnboundedSenderSink::from(out_sender)),
+                Box::pin(UnboundedSenderSink::from(out_sender).sink_err_into()),
                 destinations,
                 DefaultClientFactory {},
             )

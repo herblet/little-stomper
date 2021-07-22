@@ -2,6 +2,7 @@ use std::convert::{From, Infallible};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+use sender_sink::wrappers::SinkError;
 use stomp_parser::error::StompParseError;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -33,6 +34,13 @@ impl From<Infallible> for StomperError {
     }
 }
 
+impl From<SinkError> for StomperError {
+    fn from(err: SinkError) -> Self {
+        StomperError {
+            message: format!("Error sending to Sink: {:?}", err),
+        }
+    }
+}
 impl Display for StomperError {
     fn fmt(
         &self,
