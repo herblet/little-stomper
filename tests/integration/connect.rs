@@ -1,4 +1,4 @@
-use crate::framework::*;
+use little_stomper::test_utils::*;
 
 use std::{convert::TryFrom, pin::Pin};
 
@@ -8,6 +8,8 @@ use stomp_parser::{
     headers::{HeartBeatIntervalls, HeartBeatValue, ServerValue, StompVersion, StompVersions},
     server::ServerFrame,
 };
+
+use super::*;
 
 #[tokio::test]
 async fn connect_defaults() {
@@ -41,9 +43,9 @@ async fn unsupported_stomp_version() {
 }
 
 fn unsupported_stomp_version_errors(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         let connect =
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_1]))
@@ -68,6 +70,23 @@ fn unsupported_stomp_version_errors(
 #[tokio::test]
 async fn first_message_not_frame() {
     test_client_expectations(send("\n").then(expect_error_and_disconnect)).await;
+}
+
+pub fn expect_error_and_disconnect(
+    in_sender: InSender<StomperError>,
+    out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+    expect_error.then(wait_for_disconnect)(in_sender, out_receiver)
+}
+
+pub fn expect_error(
+    in_sender: InSender<StomperError>,
+    out_receiver: OutReceiver,
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+    receive(|bytes| matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_))))(
+        in_sender,
+        out_receiver,
+    )
 }
 
 #[tokio::test]

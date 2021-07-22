@@ -1,4 +1,4 @@
-use crate::framework::*;
+use little_stomper::test_utils::*;
 
 use std::{convert::TryFrom, pin::Pin};
 
@@ -10,15 +10,17 @@ use stomp_parser::{
 };
 use tokio::task::yield_now;
 
+use super::*;
+
 #[tokio::test]
 async fn connect_accepts_expected_heartbeat() {
     test_client_expectations(connect_replies_connected).await;
 }
 
 fn connect_replies_connected(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         let connect =
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
@@ -50,9 +52,9 @@ async fn server_sends_requested_heartbeat() {
 }
 
 fn expect_heartbeat(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         sleep_in_pause(5050).await;
 
@@ -84,9 +86,9 @@ async fn server_sends_message_to_subscriber() {
 }
 
 fn subscribe_send_receive(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         let foo = "foo".to_owned();
 
@@ -130,9 +132,9 @@ async fn server_message_delays_heartbeat() {
 }
 
 fn delayed_heartbeat(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         sleep_in_pause(3000).await;
 

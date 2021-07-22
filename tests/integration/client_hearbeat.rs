@@ -1,13 +1,16 @@
-use crate::framework::*;
+use little_stomper::{error::StomperError, test_utils::*};
 
 use std::{convert::TryFrom, pin::Pin};
 
 use futures::{Future, FutureExt};
+
 use stomp_parser::{
     client::{ConnectFrameBuilder, SubscribeFrameBuilder},
     headers::{HeartBeatIntervalls, StompVersion, StompVersions},
     server::ServerFrame,
 };
+
+use super::*;
 
 #[tokio::test]
 async fn connect_accepts_supplied_heartbeat() {
@@ -15,9 +18,9 @@ async fn connect_accepts_supplied_heartbeat() {
 }
 
 fn connect_replies_connected(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         let connect =
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
@@ -49,9 +52,9 @@ async fn error_after_missed_heartbeat() {
 }
 
 pub fn wait_for_error(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         // nothing yet
         assert!(matches!(out_receiver.recv().now_or_never(), None));
@@ -89,9 +92,9 @@ async fn connection_lingers() {
 }
 
 fn wait_and_check_alive(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         sleep_in_pause(100).await;
 
@@ -124,9 +127,9 @@ async fn frame_delays_error() {
 }
 
 fn subscribe(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         sleep_in_pause(5000).await;
         send_data(
@@ -144,9 +147,9 @@ fn subscribe(
 }
 
 fn send_hearbeat(
-    in_sender: InSender,
+    in_sender: InSender<StomperError>,
     mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender, OutReceiver)> + Send>> {
+) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
     async move {
         sleep_in_pause(5000).await;
 

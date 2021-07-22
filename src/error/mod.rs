@@ -1,4 +1,4 @@
-use std::convert::From;
+use std::convert::{From, Infallible};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
@@ -21,6 +21,14 @@ impl From<StompParseError> for StomperError {
     fn from(err: StompParseError) -> Self {
         StomperError {
             message: err.message().to_owned(),
+        }
+    }
+}
+
+impl From<Infallible> for StomperError {
+    fn from(_: Infallible) -> Self {
+        StomperError {
+            message: "Should have been Infallible!".to_owned(),
         }
     }
 }
