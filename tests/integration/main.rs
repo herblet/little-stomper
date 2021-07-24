@@ -35,6 +35,6 @@ fn create_client_session(
         .boxed()
 }
 
-async fn test_client_expectations<T: BehaviourFunction<StomperError>>(behaviour: T) {
+async fn test_client_expectations<T: BehaviourFunction<StomperError> + 'static>(behaviour: T) {
     test_expectations(create_client_session, behaviour).await;
 }

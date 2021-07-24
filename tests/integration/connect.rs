@@ -42,10 +42,10 @@ async fn unsupported_stomp_version() {
     test_client_expectations(unsupported_stomp_version_errors.then(wait_for_disconnect)).await;
 }
 
-fn unsupported_stomp_version_errors(
-    in_sender: InSender<StomperError>,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+fn unsupported_stomp_version_errors<'a>(
+    in_sender: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     async move {
         let connect =
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_1]))
@@ -55,14 +55,12 @@ fn unsupported_stomp_version_errors(
 
         tokio::task::yield_now().await;
 
-        assert_receive(&mut out_receiver, |bytes| {
-            match ServerFrame::try_from(bytes) {
-                Ok(ServerFrame::Error(_)) => true,
-                _ => false,
-            }
+        assert_receive(out_receiver, |bytes| match ServerFrame::try_from(bytes) {
+            Ok(ServerFrame::Error(_)) => true,
+            _ => false,
         });
 
-        (in_sender, out_receiver)
+        ()
     }
     .boxed()
 }
@@ -72,17 +70,17 @@ async fn first_message_not_frame() {
     test_client_expectations(send("\n").then(expect_error_and_disconnect)).await;
 }
 
-pub fn expect_error_and_disconnect(
-    in_sender: InSender<StomperError>,
-    out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+pub fn expect_error_and_disconnect<'a>(
+    in_sender: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     expect_error.then(wait_for_disconnect)(in_sender, out_receiver)
 }
 
-pub fn expect_error(
-    in_sender: InSender<StomperError>,
-    out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+pub fn expect_error<'a>(
+    in_sender: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     receive(|bytes| matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_))))(
         in_sender,
         out_receiver,

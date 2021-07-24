@@ -17,10 +17,10 @@ async fn connect_accepts_expected_heartbeat() {
     test_client_expectations(connect_replies_connected).await;
 }
 
-fn connect_replies_connected(
-    in_sender: InSender<StomperError>,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+fn connect_replies_connected<'a>(
+    in_sender: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     async move {
         let connect =
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
@@ -31,17 +31,15 @@ fn connect_replies_connected(
 
         yield_now().await;
 
-        assert_receive(&mut out_receiver, |bytes| {
-            match ServerFrame::try_from(bytes) {
-                Ok(ServerFrame::Connected(connected)) => {
-                    let hb = connected.heartbeat.expect("Heartbeat not provided");
-                    hb.value().expected == 0 && hb.value().supplied == 5000
-                }
-                _ => false,
+        assert_receive(out_receiver, |bytes| match ServerFrame::try_from(bytes) {
+            Ok(ServerFrame::Connected(connected)) => {
+                let hb = connected.heartbeat.expect("Heartbeat not provided");
+                hb.value().expected == 0 && hb.value().supplied == 5000
             }
+            _ => false,
         });
 
-        (in_sender, out_receiver)
+        ()
     }
     .boxed()
 }
@@ -51,18 +49,16 @@ async fn server_sends_requested_heartbeat() {
     test_client_expectations(connect_replies_connected.then(expect_heartbeat)).await;
 }
 
-fn expect_heartbeat(
-    in_sender: InSender<StomperError>,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+fn expect_heartbeat<'a>(
+    _: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     async move {
         sleep_in_pause(5050).await;
 
-        assert_receive(&mut out_receiver, |bytes| {
-            matches!(&*bytes, b"\n" | b"\r\n")
-        });
+        assert_receive(out_receiver, |bytes| matches!(&*bytes, b"\n" | b"\r\n"));
 
-        (in_sender, out_receiver)
+        ()
     }
     .boxed()
 }
@@ -85,10 +81,10 @@ async fn server_sends_message_to_subscriber() {
     test_client_expectations(connect_replies_connected.then(subscribe_send_receive)).await;
 }
 
-fn subscribe_send_receive(
-    in_sender: InSender<StomperError>,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+fn subscribe_send_receive<'a>(
+    in_sender: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     async move {
         let foo = "foo".to_owned();
 
@@ -108,7 +104,7 @@ fn subscribe_send_receive(
 
         sleep_in_pause(1000).await;
 
-        assert_receive(&mut out_receiver, |bytes| {
+        assert_receive(out_receiver, |bytes| {
             if let Ok(ServerFrame::Message(frame)) = ServerFrame::try_from(bytes) {
                 "Hello, world!" == String::from_utf8(frame.body().unwrap().to_vec()).unwrap()
             } else {
@@ -116,7 +112,7 @@ fn subscribe_send_receive(
             }
         });
 
-        (in_sender, out_receiver)
+        ()
     }
     .boxed()
 }
@@ -131,10 +127,10 @@ async fn server_message_delays_heartbeat() {
     .await;
 }
 
-fn delayed_heartbeat(
-    in_sender: InSender<StomperError>,
-    mut out_receiver: OutReceiver,
-) -> Pin<Box<dyn Future<Output = (InSender<StomperError>, OutReceiver)> + Send>> {
+fn delayed_heartbeat<'a>(
+    _: &'a mut InSender<StomperError>,
+    out_receiver: &'a mut OutReceiver,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     async move {
         sleep_in_pause(3000).await;
 
@@ -144,11 +140,9 @@ fn delayed_heartbeat(
 
         sleep_in_pause(2000).await;
 
-        assert_receive(&mut out_receiver, |bytes| {
-            matches!(&*bytes, b"\n" | b"\r\n")
-        });
+        assert_receive(out_receiver, |bytes| matches!(&*bytes, b"\n" | b"\r\n"));
 
-        (in_sender, out_receiver)
+        ()
     }
     .boxed()
 }
