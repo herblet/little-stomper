@@ -1,4 +1,4 @@
-use little_stomper::test_utils::*;
+use stomp_test_utils::*;
 
 use std::{convert::TryFrom, pin::Pin};
 
@@ -13,7 +13,7 @@ use super::*;
 
 #[tokio::test]
 async fn connect_defaults() {
-    test_client_expectations(
+    assert_client_behaviour(
         send(
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_2]))
                 .build(),
@@ -39,7 +39,7 @@ async fn connect_defaults() {
 
 #[tokio::test]
 async fn unsupported_stomp_version() {
-    test_client_expectations(unsupported_stomp_version_errors.then(wait_for_disconnect)).await;
+    assert_client_behaviour(unsupported_stomp_version_errors.then(wait_for_disconnect)).await;
 }
 
 fn unsupported_stomp_version_errors<'a>(
@@ -67,7 +67,7 @@ fn unsupported_stomp_version_errors<'a>(
 
 #[tokio::test]
 async fn first_message_not_frame() {
-    test_client_expectations(send("\n").then(expect_error_and_disconnect)).await;
+    assert_client_behaviour(send("\n").then(expect_error_and_disconnect)).await;
 }
 
 pub fn expect_error_and_disconnect<'a>(
@@ -89,7 +89,7 @@ pub fn expect_error<'a>(
 
 #[tokio::test]
 async fn first_message_not_connect() {
-    test_client_expectations(send(subscribe_frame()).then(expect_error_and_disconnect)).await;
+    assert_client_behaviour(send(subscribe_frame()).then(expect_error_and_disconnect)).await;
 }
 
 fn subscribe_frame() -> SubscribeFrame {

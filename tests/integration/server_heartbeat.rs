@@ -1,4 +1,4 @@
-use little_stomper::test_utils::*;
+use stomp_test_utils::*;
 
 use std::{convert::TryFrom, pin::Pin};
 
@@ -14,7 +14,7 @@ use super::*;
 
 #[tokio::test]
 async fn connect_accepts_expected_heartbeat() {
-    test_client_expectations(connect_replies_connected).await;
+    assert_client_behaviour(connect_replies_connected).await;
 }
 
 fn connect_replies_connected<'a>(
@@ -46,7 +46,7 @@ fn connect_replies_connected<'a>(
 
 #[tokio::test]
 async fn server_sends_requested_heartbeat() {
-    test_client_expectations(connect_replies_connected.then(expect_heartbeat)).await;
+    assert_client_behaviour(connect_replies_connected.then(expect_heartbeat)).await;
 }
 
 fn expect_heartbeat<'a>(
@@ -65,7 +65,7 @@ fn expect_heartbeat<'a>(
 
 #[tokio::test]
 async fn server_continues_sending_heartbeat() {
-    test_client_expectations(
+    assert_client_behaviour(
         connect_replies_connected
             .then(expect_heartbeat)
             .then(expect_heartbeat)
@@ -78,7 +78,7 @@ async fn server_continues_sending_heartbeat() {
 
 #[tokio::test]
 async fn server_sends_message_to_subscriber() {
-    test_client_expectations(connect_replies_connected.then(subscribe_send_receive)).await;
+    assert_client_behaviour(connect_replies_connected.then(subscribe_send_receive)).await;
 }
 
 fn subscribe_send_receive<'a>(
@@ -119,7 +119,7 @@ fn subscribe_send_receive<'a>(
 
 #[tokio::test]
 async fn server_message_delays_heartbeat() {
-    test_client_expectations(
+    assert_client_behaviour(
         connect_replies_connected
             .then(subscribe_send_receive)
             .then(delayed_heartbeat),

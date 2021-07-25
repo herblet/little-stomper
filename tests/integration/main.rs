@@ -10,8 +10,9 @@ use little_stomper::{
     },
     client::DefaultClientFactory,
     error::StomperError,
-    test_utils::{test_expectations, BehaviourFunction},
 };
+use stomp_test_utils::*;
+
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 mod client_hearbeat;
@@ -35,6 +36,6 @@ fn create_client_session(
         .boxed()
 }
 
-async fn test_client_expectations<T: BehaviourFunction<StomperError> + 'static>(behaviour: T) {
-    test_expectations(create_client_session, behaviour).await;
+async fn assert_client_behaviour<T: BehaviourFunction<StomperError> + 'static>(behaviour: T) {
+    assert_behaviour(create_client_session, behaviour).await;
 }
