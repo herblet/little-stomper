@@ -41,6 +41,7 @@ impl From<SinkError> for StomperError {
         }
     }
 }
+
 impl Display for StomperError {
     fn fmt(
         &self,
@@ -89,7 +90,11 @@ impl Error for UnknownCommandError {}
 
 #[cfg(test)]
 mod test {
-    use crate::error::ErrorWrapper;
+    use sender_sink::wrappers::SinkError;
+    use stomp_parser::error::StompParseError;
+
+    use crate::error::{ErrorWrapper, StomperError};
+    use std::convert::Infallible;
     use std::error::Error;
     use std::fmt::{Display, Formatter};
     #[derive(Debug)]
@@ -110,5 +115,42 @@ mod test {
         let wrapped_error = ErrorWrapper::new(error);
 
         assert_eq!(42, wrapped_error.0.downcast::<ErrorForTest>().unwrap().0);
+    }
+
+    #[test]
+    fn from_stomp_parse_error() {
+        let src = StompParseError::new("freaky");
+        let error: StomperError = src.into();
+
+        assert_eq!("freaky", error.message);
+    }
+
+    #[test]
+    fn from_sink_error() {
+        let src = SinkError::ChannelClosed;
+        let error: StomperError = src.into();
+
+        assert!(error.message.contains("Closed"));
+    }
+
+    fn never_error() -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    #[test]
+    fn from_infallible() {
+        let src = never_error();
+        let target = src.map_err(StomperError::from);
+
+        // this is really a compiler test
+        assert!(target.is_ok());
+    }
+
+    #[test]
+    fn error_display() {
+        let src = StomperError::new("Hello, world!");
+
+        // this is really a compiler test
+        assert_eq!("Hello, world!", src.to_string());
     }
 }
