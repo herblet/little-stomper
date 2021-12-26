@@ -42,7 +42,7 @@ impl ResettableTimerResetter {
 
 /// A timer, implemented as as a stream of `unit` emissions, emitting each time `period` has elapsed.
 ///
-/// The timer can be reset, so that the period will begin a new from `now`, and the period can be changed, which also causes a reset.
+/// The timer can be reset, so that the period will begin anew from `now`, and the period can be changed, which also causes a reset.
 pub struct ResettableTimer {
     period: Duration,
     receiver: Option<UnboundedReceiver<ResettableTimerCommand>>,

@@ -42,6 +42,7 @@ enum ClientState {
 }
 
 /// And Event which a AsyncStompClient can receive
+#[derive(Debug)]
 enum ClientEvent {
     Connected(HeartBeatIntervalls),
 
@@ -417,7 +418,7 @@ where
                 .map(|(_, opt_frame)| {
                     // serialize the frame
                     opt_frame.map(|either| match either {
-                        Either::Left(frame) => frame.to_string().into_bytes(),
+                        Either::Left(frame) => frame.into(),
                         Either::Right(bytes) => bytes,
                     })
                 })
@@ -568,7 +569,8 @@ where
                 server_heartbeat_stream
                     .map(|_| ClientEvent::Heartbeat)
                     .boxed(),
-            ]));
+            ]))
+            .inspect(|event| log::debug!("ClientEvent: {:?}", event));
 
             let (client_heartbeat_stream, client_heartbeat_resetter) =
                 if heartbeat_requested.supplied > 0 {
@@ -595,8 +597,8 @@ where
 
             all_events
                 .then(event_handler)
-                .inspect_ok(|_| {
-                    log::debug!("Response");
+                .inspect_ok(|(_, message)| {
+                    log::debug!("Message to client: {:?}", message);
                 })
                 .inspect_err(Self::log_error)
                 .take_while(Self::not_dead)
