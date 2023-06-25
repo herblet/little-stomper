@@ -164,7 +164,7 @@ impl ResettableTimer {
             .expect("Bad state: neither remote not receiver present");
 
         let task =
-            ResettableTimer::create_task_with_receiver(self.period.clone(), receiver).boxed();
+            ResettableTimer::create_task_with_receiver(self.period, receiver).boxed();
 
         self.task.replace(tokio::task::spawn(task));
         // poll the task so that it will trigger the waker if it gets done

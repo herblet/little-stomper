@@ -31,9 +31,9 @@ macro_rules! string_id_class {
             }
         }
 
-        impl Into<String> for $name {
-            fn into(self) -> String {
-                self.0
+        impl From<$name> for String {
+            fn from(src: $name) -> String {
+                src.0
             }
         }
     };

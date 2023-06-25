@@ -56,7 +56,7 @@ pub fn wait_for_error<'a>(
             matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_)))
         });
 
-        ()
+        
     }
     .boxed()
 }
@@ -91,7 +91,7 @@ fn wait_and_check_alive<'a>(
         // We did not receive a message from now_or_never; a disconnect would be Some(None)
         assert!(matches!(out_receiver.recv().now_or_never(), None));
 
-        ()
+        
     }
     .boxed()
 }
@@ -123,7 +123,7 @@ fn subscribe<'a>(
     async move {
         sleep_in_pause(5000).await;
         send_data(
-            &in_sender,
+            in_sender,
             SubscribeFrameBuilder::new("foo".to_owned(), "MySub".to_owned()).build(),
         );
         sleep_in_pause(2000).await;
@@ -131,7 +131,7 @@ fn subscribe<'a>(
         // No error
         assert!(matches!(out_receiver.recv().now_or_never(), None));
 
-        ()
+        
     }
     .boxed()
 }
@@ -150,7 +150,7 @@ fn send_hearbeat<'a>(
         // No error
         assert!(matches!(out_receiver.recv().now_or_never(), None));
 
-        ()
+        
     }
     .boxed()
 }

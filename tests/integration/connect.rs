@@ -51,7 +51,7 @@ fn unsupported_stomp_version_errors<'a>(
             ConnectFrameBuilder::new("here".to_owned(), StompVersions(vec![StompVersion::V1_1]))
                 .build();
 
-        send_data(&in_sender, connect);
+        send_data(in_sender, connect);
 
         tokio::task::yield_now().await;
 
@@ -60,7 +60,7 @@ fn unsupported_stomp_version_errors<'a>(
             _ => false,
         });
 
-        ()
+        
     }
     .boxed()
 }

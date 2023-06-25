@@ -48,7 +48,6 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
                 .get(
                     &destination,
                     self.destination_factory.clone()
-                        as Arc<dyn Fn(&DestinationId) -> D + Send + Sync>,
                 )
                 .inspect(move |destination| {
                     destination.subscribe(subscriber_sub_id, subscriber, &client);
@@ -155,7 +154,7 @@ mod test {
     fn map_draining_factory(
         map: Arc<RwLock<HashMap<DestinationId, Arc<MockTestDest>>>>,
     ) -> Arc<dyn Fn(&DestinationId) -> Arc<MockTestDest> + Send + Sync + 'static> {
-        Arc::new(move |id| map.try_write().unwrap().remove(&id).unwrap())
+        Arc::new(move |id| map.try_write().unwrap().remove(id).unwrap())
     }
 
     fn insert_subscribe_counting_dest(
@@ -175,7 +174,7 @@ mod test {
             })
             .return_const(());
         let dest = Arc::new(dest);
-        map.try_write().unwrap().insert(id, dest.clone());
+        map.try_write().unwrap().insert(id, dest);
     }
 
     fn insert_send_counting_dest(
