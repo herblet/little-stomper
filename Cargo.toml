@@ -16,7 +16,7 @@ tokio-tungstenite = "0.18"
 sender-sink = { version = "0.2", path="../sender-sink" }
 stomp-parser = { version = "0.6", path="../stomp-parser" } 
 stomp-test-utils = { version = "0.2", path="../stomp-test-utils" }
-async-map = { path="../async-map" }
+async-map = { version="0.2.2", path="../async-map" }
 log = "0.4"
 env_logger = "0.10"
 im = "15"
