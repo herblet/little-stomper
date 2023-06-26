@@ -13,7 +13,7 @@ pub struct InboundMessage {
     pub body: Vec<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OutboundMessage {
     pub destination: DestinationId,
     pub message_id: MessageId,

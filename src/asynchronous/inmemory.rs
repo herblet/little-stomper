@@ -97,26 +97,20 @@ impl Destination for InMemDestination {
         subscriber: D,
         _: &Self::Client,
     ) {
-        match self.perform_action(DestinationAction::Subscribe(
+        if let Err(mpsc::error::SendError(DestinationAction::Subscribe(
+            sender_subscription_id,
+            subscribe_callback,
+            _,
+        ))) = self.perform_action(DestinationAction::Subscribe(
             sender_subscription_id,
             to_subscribe_callback(subscriber.clone()),
             to_send_fn(subscriber),
         )) {
-            Err(err) => {
-                if let mpsc::error::SendError(DestinationAction::Subscribe(
-                    sender_subscription_id,
-                    subscribe_callback,
-                    _,
-                )) = err
-                {
-                    subscribe_callback(
-                        self.id.clone(),
-                        sender_subscription_id,
-                        Err(StomperError::new("Subscribe failed")),
-                    );
-                }
-            }
-            Ok(_) => { /* do nothing */ }
+            subscribe_callback(
+                self.id.clone(),
+                sender_subscription_id,
+                Err(StomperError::new("Subscribe failed")),
+            );
         }
     }
 
@@ -126,17 +120,13 @@ impl Destination for InMemDestination {
         sender: D,
         _: &Self::Client,
     ) {
-        match self.perform_action(DestinationAction::Send(message, to_send_callback(sender))) {
-            Err(err) => {
-                if let mpsc::error::SendError(DestinationAction::Send(message, send_callback)) = err
-                {
-                    send_callback(
-                        message.sender_message_id,
-                        Err(StomperError::new("Send failed")),
-                    );
-                }
-            }
-            Ok(_) => { /* do nothing */ }
+        if let Err(mpsc::error::SendError(DestinationAction::Send(message, send_callback))) =
+            self.perform_action(DestinationAction::Send(message, to_send_callback(sender)))
+        {
+            send_callback(
+                message.sender_message_id,
+                Err(StomperError::new("Send failed")),
+            );
         }
     }
 
@@ -146,29 +136,20 @@ impl Destination for InMemDestination {
         subscriber: D,
         _: &Self::Client,
     ) {
-        match self.perform_action(DestinationAction::Unsubscribe(
+        if let Err(mpsc::error::SendError(DestinationAction::Unsubscribe(
+            _,
+            unsubscribe_callback,
+        ))) = self.perform_action(DestinationAction::Unsubscribe(
             sub_id,
             to_unsubscribe_callback(subscriber),
         )) {
-            Err(err) => {
-                if let mpsc::error::SendError(DestinationAction::Unsubscribe(
-                    _,
-                    unsubscribe_callback,
-                )) = err
-                {
-                    unsubscribe_callback(None, Err(StomperError::new("Unsubscribe failed")));
-                }
-            }
-            Ok(_) => { /* do nothing */ }
+            unsubscribe_callback(None, Err(StomperError::new("Unsubscribe failed")));
         }
     }
 
     fn close(&self) {
-        match self.perform_action(DestinationAction::Close) {
-            Err(err) => {
-                log::error!("Error closing destination {}: {}", self.id, err);
-            }
-            Ok(_) => { /* do nothing */ }
+        if let Err(err) = self.perform_action(DestinationAction::Close) {
+            log::error!("Error closing destination {}: {}", self.id, err);
         }
     }
 }
@@ -251,18 +232,18 @@ impl InMemDestinationBackend {
             body: message.body,
         };
 
-        let mut subscriptions = self.subscriptions.values();
+        let subscriptions = self.subscriptions.values();
         let mut dead_subscriptions = Vec::new();
 
-        while let Some(subscription) = subscriptions.next() {
-            if let Err(_) = subscription.send(out_message.clone()) {
+        for subscription in subscriptions {
+            if subscription.send(out_message.clone()).is_err() {
                 dead_subscriptions.push(subscription.id.clone());
             }
         }
 
-        let mut dead_subscriptions = dead_subscriptions.into_iter();
+        let dead_subscriptions = dead_subscriptions.into_iter();
 
-        while let Some(sub_id) = dead_subscriptions.next() {
+        for sub_id in dead_subscriptions {
             self.subscriptions.remove(&sub_id);
         }
 
@@ -417,7 +398,6 @@ mod test {
                     .try_write()
                     .unwrap()
                     .replace(result.unwrap());
-                ()
             });
 
         let mut sender = create_sender();

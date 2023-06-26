@@ -37,7 +37,7 @@ mock! {
         ) -> Result<(), StomperError>;
     }
 
-    impl std::fmt::Debug for TestClient {
+    impl std::fmt::Debug for TestSubscriber {
      fn fmt<'a>(&self, f: &mut std::fmt::Formatter<'a>) -> std::fmt::Result;
     }
 }

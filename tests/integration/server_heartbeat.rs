@@ -27,7 +27,7 @@ fn connect_replies_connected<'a>(
                 .heartbeat(HeartBeatIntervalls::new(0, 5000))
                 .build();
 
-        send_data(&in_sender, connect);
+        send_data(in_sender, connect);
 
         yield_now().await;
 
@@ -38,8 +38,6 @@ fn connect_replies_connected<'a>(
             }
             _ => false,
         });
-
-        ()
     }
     .boxed()
 }
@@ -57,8 +55,6 @@ fn expect_heartbeat<'a>(
         sleep_in_pause(5050).await;
 
         assert_receive(out_receiver, |bytes| matches!(&*bytes, b"\n" | b"\r\n"));
-
-        ()
     }
     .boxed()
 }
@@ -89,14 +85,14 @@ fn subscribe_send_receive<'a>(
         let foo = "foo".to_owned();
 
         send_data(
-            &in_sender,
+            in_sender,
             SubscribeFrameBuilder::new(foo.clone(), "sub".to_owned()).build(),
         );
 
         sleep_in_pause(2000).await;
 
         send_data(
-            &in_sender,
+            in_sender,
             SendFrameBuilder::new(foo)
                 .body(b"Hello, world!".to_vec())
                 .build(),
@@ -111,8 +107,6 @@ fn subscribe_send_receive<'a>(
                 false
             }
         });
-
-        ()
     }
     .boxed()
 }
@@ -134,15 +128,13 @@ fn delayed_heartbeat<'a>(
     async move {
         sleep_in_pause(3000).await;
 
-        if let Some(_) = out_receiver.recv().now_or_never() {
+        if out_receiver.recv().now_or_never().is_some() {
             panic!("Heartbeat should be delayed")
         }
 
         sleep_in_pause(2000).await;
 
         assert_receive(out_receiver, |bytes| matches!(&*bytes, b"\n" | b"\r\n"));
-
-        ()
     }
     .boxed()
 }

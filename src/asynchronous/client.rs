@@ -7,6 +7,7 @@ use crate::destinations::{
 use crate::error::StomperError;
 
 use either::Either;
+use futures::future::BoxFuture;
 use futures::sink::Sink;
 use futures::stream::{once, Stream};
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
@@ -31,9 +32,11 @@ use std::collections::HashMap;
 
 use super::delayable_stream::ResettableTimerResetter;
 
-const EOL: &'static [u8; 1] = b"\n";
+const EOL: &[u8; 1] = b"\n";
 const LINGER_TIME: u64 = 1000;
 const HEARTBEAT_BUFFER_PERCENT: u32 = 20;
+
+type ServerMessage = Either<ServerFrame, Vec<u8>>;
 
 /// Indicates or changes the current state of the client
 enum ClientState {
@@ -42,6 +45,7 @@ enum ClientState {
 }
 
 /// And Event which a AsyncStompClient can receive
+#[derive(Debug)]
 enum ClientEvent {
     Connected(HeartBeatIntervalls),
 
@@ -96,7 +100,7 @@ pub struct AsyncStompClient {
 
 impl AsyncStompClient {
     fn send_event(&self, event: ClientEvent) {
-        if let Err(_) = self.sender.send(event) {
+        if self.sender.send(event).is_err() {
             info!("Unable to send ClientEvent, channel closed?");
         }
     }
@@ -211,13 +215,7 @@ fn frame_result(frame: ServerFrame) -> ResultType {
 fn state_frame_result(
     state: ClientState,
     frame: ServerFrame,
-) -> Pin<
-    Box<
-        dyn Future<
-                Output = Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
-            > + Send,
-    >,
-> {
+) -> BoxFuture<'static, Result<(ClientState, Option<ServerMessage>), StomperError>> {
     ready(Ok((state, Some(Either::Left(frame))))).boxed()
 }
 
@@ -301,7 +299,7 @@ where
         client_subscription_id: SubscriptionId,
         result: Result<SubscriptionId, StomperError>,
     ) -> ResultType {
-        if let Ok(_) = result {
+        if result.is_ok() {
             self.active_subscriptions_by_client_id
                 .remove(&client_subscription_id);
         }
@@ -409,7 +407,7 @@ where
     }
 
     fn into_opt_ok_of_bytes(
-        result: Result<(ClientState, Option<Either<ServerFrame, Vec<u8>>>), StomperError>,
+        result: Result<(ClientState, Option<ServerMessage>), StomperError>,
     ) -> impl Future<Output = Option<Result<Vec<u8>, StomperError>>> {
         ready(
             // Drop the ClientState, already handled
@@ -417,7 +415,7 @@ where
                 .map(|(_, opt_frame)| {
                     // serialize the frame
                     opt_frame.map(|either| match either {
-                        Either::Left(frame) => frame.to_string().into_bytes(),
+                        Either::Left(frame) => frame.into(),
                         Either::Right(bytes) => bytes,
                     })
                 })
@@ -440,6 +438,7 @@ where
 
         let stream_from_client = stream
             .and_then(|bytes| Self::parse_client_message(bytes).boxed())
+            .inspect(|frame| log::debug!("Frame: {:?}", frame))
             .map(|opt_frame| {
                 opt_frame
                     .transpose()
@@ -488,13 +487,7 @@ where
     fn validate_and_connect<F: ClientFactory<T::Client> + 'static>(
         first_message: Option<ClientEvent>,
         client_factory: F,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(HeartBeatIntervalls, T::Client), StomperError>>
-                + Send
-                + 'static,
-        >,
-    > {
+    ) -> BoxFuture<'static, Result<(HeartBeatIntervalls, T::Client), StomperError>> {
         match first_message {
             Some(ClientEvent::ClientFrame(Ok(ClientFrame::Connect(connect_frame)))) => {
                 if !connect_frame
@@ -568,7 +561,8 @@ where
                 server_heartbeat_stream
                     .map(|_| ClientEvent::Heartbeat)
                     .boxed(),
-            ]));
+            ]))
+            .inspect(|event| log::debug!("ClientEvent: {:?}", event));
 
             let (client_heartbeat_stream, client_heartbeat_resetter) =
                 if heartbeat_requested.supplied > 0 {
@@ -595,8 +589,8 @@ where
 
             all_events
                 .then(event_handler)
-                .inspect_ok(|_| {
-                    log::debug!("Response");
+                .inspect_ok(|(_, message)| {
+                    log::debug!("Message to client: {:?}", message);
                 })
                 .inspect_err(Self::log_error)
                 .take_while(Self::not_dead)
@@ -705,7 +699,7 @@ mod tests {
             },
         );
 
-        if let Err(_) = result {
+        if result.is_err() {
             panic!("Send failed");
         }
 

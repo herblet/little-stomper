@@ -42,7 +42,7 @@ impl ResettableTimerResetter {
 
 /// A timer, implemented as as a stream of `unit` emissions, emitting each time `period` has elapsed.
 ///
-/// The timer can be reset, so that the period will begin a new from `now`, and the period can be changed, which also causes a reset.
+/// The timer can be reset, so that the period will begin anew from `now`, and the period can be changed, which also causes a reset.
 pub struct ResettableTimer {
     period: Duration,
     receiver: Option<UnboundedReceiver<ResettableTimerCommand>>,
@@ -163,8 +163,7 @@ impl ResettableTimer {
             .take()
             .expect("Bad state: neither remote not receiver present");
 
-        let task =
-            ResettableTimer::create_task_with_receiver(self.period.clone(), receiver).boxed();
+        let task = ResettableTimer::create_task_with_receiver(self.period, receiver).boxed();
 
         self.task.replace(tokio::task::spawn(task));
         // poll the task so that it will trigger the waker if it gets done
