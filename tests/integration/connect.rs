@@ -59,8 +59,6 @@ fn unsupported_stomp_version_errors<'a>(
             Ok(ServerFrame::Error(_)) => true,
             _ => false,
         });
-
-        
     }
     .boxed()
 }

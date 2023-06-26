@@ -55,8 +55,6 @@ pub fn wait_for_error<'a>(
         assert_receive(out_receiver, |bytes| {
             matches!(ServerFrame::try_from(bytes), Ok(ServerFrame::Error(_)))
         });
-
-        
     }
     .boxed()
 }
@@ -90,8 +88,6 @@ fn wait_and_check_alive<'a>(
 
         // We did not receive a message from now_or_never; a disconnect would be Some(None)
         assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        
     }
     .boxed()
 }
@@ -130,8 +126,6 @@ fn subscribe<'a>(
 
         // No error
         assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        
     }
     .boxed()
 }
@@ -149,8 +143,6 @@ fn send_hearbeat<'a>(
 
         // No error
         assert!(matches!(out_receiver.recv().now_or_never(), None));
-
-        
     }
     .boxed()
 }

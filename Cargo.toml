@@ -13,10 +13,10 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 tokio-tungstenite = "0.18"
-sender-sink = { version = "0.2", path="../sender-sink" }
-stomp-parser = { version = "0.6", path="../stomp-parser" } 
-stomp-test-utils = { version = "0.2", path="../stomp-test-utils" }
-async-map = { version="0.2.2", path="../async-map" }
+sender-sink = { version = "0.2", git = "https://github.com/herblet/sender-sink", branch="main"}
+stomp-parser = { version = "0.6", git = "https://github.com/herblet/stomp-parser", branch="main"}
+stomp-test-utils = { version = "0.2", git = "https://github.com/herblet/stomp-test-utils", branch="main"}
+async-map = { version = "0.2.3", git = "https://github.com/herblet/async-map", branch="main"}
 log = "0.4"
 env_logger = "0.10"
 im = "15"

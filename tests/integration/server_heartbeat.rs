@@ -38,8 +38,6 @@ fn connect_replies_connected<'a>(
             }
             _ => false,
         });
-
-        
     }
     .boxed()
 }
@@ -57,8 +55,6 @@ fn expect_heartbeat<'a>(
         sleep_in_pause(5050).await;
 
         assert_receive(out_receiver, |bytes| matches!(&*bytes, b"\n" | b"\r\n"));
-
-        
     }
     .boxed()
 }
@@ -111,8 +107,6 @@ fn subscribe_send_receive<'a>(
                 false
             }
         });
-
-        
     }
     .boxed()
 }
@@ -141,8 +135,6 @@ fn delayed_heartbeat<'a>(
         sleep_in_pause(2000).await;
 
         assert_receive(out_receiver, |bytes| matches!(&*bytes, b"\n" | b"\r\n"));
-
-        
     }
     .boxed()
 }

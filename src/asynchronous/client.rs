@@ -438,7 +438,7 @@ where
 
         let stream_from_client = stream
             .and_then(|bytes| Self::parse_client_message(bytes).boxed())
-            .inspect(|frame|log::debug!("Frame: {:?}", frame))
+            .inspect(|frame| log::debug!("Frame: {:?}", frame))
             .map(|opt_frame| {
                 opt_frame
                     .transpose()

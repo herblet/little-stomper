@@ -183,7 +183,6 @@ async fn accept_connection<D: DestinationType + 'static>(
         .expect("connected streams should have a peer address");
     info!("Peer address: {}", addr);
 
-
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
         .expect("Error during the websocket handshake occurred");

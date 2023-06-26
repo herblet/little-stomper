@@ -2,7 +2,7 @@ use crate::client::DefaultClient;
 use crate::destinations::*;
 use crate::error::StomperError;
 
-use async_map::{AsyncMap, VersionedMap};
+use async_map::{AsyncFactory, AsyncMap, VersionedMap};
 
 use std::ops::Deref;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ impl<
 #[derive(Clone)]
 pub struct AsyncDestinations<D: DestinationType> {
     destinations: VersionedMap<DestinationId, D>,
-    destination_factory: Arc<dyn Fn(&DestinationId) -> D + Sync + Send>,
+    destination_factory: Arc<dyn AsyncFactory<DestinationId, D>>,
 }
 
 impl<D: DestinationType> Destinations for AsyncDestinations<D> {
@@ -45,10 +45,7 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
         let client = client.clone();
         tokio::task::spawn(
             self.destinations
-                .get(
-                    &destination,
-                    self.destination_factory.clone()
-                )
+                .get(&destination, self.destination_factory.clone())
                 .inspect(move |destination| {
                     destination.subscribe(subscriber_sub_id, subscriber, &client);
                 }),
@@ -92,7 +89,7 @@ impl<D: DestinationType> Destinations for AsyncDestinations<D> {
 
 impl<D: DestinationType> AsyncDestinations<D> {
     pub async fn start(
-        destination_factory: Arc<dyn Fn(&DestinationId) -> D + Sync + Send>,
+        destination_factory: Arc<dyn AsyncFactory<DestinationId, D>>,
     ) -> AsyncDestinations<D> {
         AsyncDestinations {
             destinations: VersionedMap::new(),
@@ -113,6 +110,7 @@ mod test {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
 
+    use async_map::AsyncFactory;
     use tokio::task::yield_now;
 
     use im::HashMap;
@@ -153,7 +151,7 @@ mod test {
 
     fn map_draining_factory(
         map: Arc<RwLock<HashMap<DestinationId, Arc<MockTestDest>>>>,
-    ) -> Arc<dyn Fn(&DestinationId) -> Arc<MockTestDest> + Send + Sync + 'static> {
+    ) -> Arc<dyn AsyncFactory<DestinationId, Arc<MockTestDest>>> {
         Arc::new(move |id| map.try_write().unwrap().remove(id).unwrap())
     }
 
