@@ -20,15 +20,11 @@ async fn connect_defaults() {
         )
         .then(receive(|bytes| match ServerFrame::try_from(bytes) {
             Ok(ServerFrame::Connected(connected)) => {
-                connected.version.value() == &StompVersion::V1_2
-                    && connected.server.as_ref().map(ServerValue::value).unwrap()
+                connected.version().value() == &StompVersion::V1_2
+                    && connected.server().map(ServerValue::value).unwrap()
                         == &("little-stomper/".to_owned() + env!("CARGO_PKG_VERSION"))
-                    && connected.session.is_none()
-                    && connected
-                        .heartbeat
-                        .as_ref()
-                        .map(HeartBeatValue::value)
-                        .unwrap()
+                    && connected.session().is_none()
+                    && connected.heartbeat().map(HeartBeatValue::value).unwrap()
                         == &HeartBeatIntervalls::default()
             }
             _ => false,
@@ -90,6 +86,6 @@ async fn first_message_not_connect() {
     assert_client_behaviour(send(subscribe_frame()).then(expect_error_and_disconnect)).await;
 }
 
-fn subscribe_frame() -> SubscribeFrame {
+fn subscribe_frame() -> SubscribeFrame<'static> {
     SubscribeFrameBuilder::new("foo".to_owned(), "MySub".to_owned()).build()
 }
