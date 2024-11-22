@@ -18,7 +18,6 @@ use std::convert::TryFrom;
 use std::future::ready;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 use stomp_parser::client::*;
 use stomp_parser::headers::*;
@@ -81,18 +80,18 @@ enum ClientEvent {
 ///
 /// Note that a client must also implement [destinations::Subscriber](crate::destinations::Subscriber) and [destinations::Sender](crate::destinations::Sender),
 /// which define the bulk of the API.
-trait ClientProxy: Subscriber + Sender + Sync + Send {
-    /// Allows error messages to be send to the client
-    fn error(&self, message: &str);
+// trait ClientProxy: Subscriber + Sender + Sync + Send {
+//     /// Allows error messages to be send to the client
+//     fn error(&self, message: &str);
 
-    /// Exposes self as a Sender.
-    fn into_sender(self: Arc<Self>) -> Arc<dyn Sender>;
+//     /// Exposes self as a Sender.
+//     fn into_sender(self: Arc<Self>) -> Arc<dyn Sender>;
 
-    /// Exposes self as a Subscriber.
-    fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
+//     /// Exposes self as a Subscriber.
+//     fn into_subscriber(self: Arc<Self>) -> Arc<dyn Subscriber>;
 
-    fn send_heartbeat(&self);
-}
+//     fn send_heartbeat(&self);
+// }
 #[derive(Debug, Clone)]
 pub struct AsyncStompClient {
     sender: UnboundedSender<ClientEvent>,
@@ -156,22 +155,22 @@ impl Sender for AsyncStompClient {
     }
 }
 
-impl ClientProxy for AsyncStompClient {
-    fn into_sender(self: Arc<Self>) -> Arc<(dyn Sender + 'static)> {
-        self
-    }
-    fn into_subscriber(self: Arc<Self>) -> Arc<(dyn Subscriber + 'static)> {
-        self
-    }
+// impl ClientProxy for AsyncStompClient {
+//     fn into_sender(self: Arc<Self>) -> Arc<(dyn Sender + 'static)> {
+//         self
+//     }
+//     fn into_subscriber(self: Arc<Self>) -> Arc<(dyn Subscriber + 'static)> {
+//         self
+//     }
 
-    fn error(&self, message: &str) {
-        self.send_event(ClientEvent::Error(message.to_owned()));
-    }
+//     fn error(&self, message: &str) {
+//         self.send_event(ClientEvent::Error(message.to_owned()));
+//     }
 
-    fn send_heartbeat(&self) {
-        self.send_event(ClientEvent::Heartbeat)
-    }
-}
+//     fn send_heartbeat(&self) {
+//         self.send_event(ClientEvent::Heartbeat)
+//     }
+// }
 
 impl AsyncStompClient {
     fn create(sender: UnboundedSender<ClientEvent>) -> Self {
@@ -491,19 +490,19 @@ where
         match first_message {
             Some(ClientEvent::ClientFrame(Ok(ClientFrame::Connect(connect_frame)))) => {
                 if !connect_frame
-                    .accept_version
+                    .accept_version()
                     .value()
                     .contains(&StompVersion::V1_2)
                 {
                     ready(Err(StomperError::new("Only STOMP 1.2 is supported"))).boxed()
                 } else {
                     let login: Option<String> = connect_frame
-                        .login
+                        .login()
                         .map(|login_value| login_value.value().to_owned());
                     let passcode: Option<String> = connect_frame
-                        .passcode
+                        .passcode()
                         .map(|passcode_value| passcode_value.value().to_owned());
-                    let heartbeat = connect_frame.heartbeat.value().clone();
+                    let heartbeat = connect_frame.heartbeat().value().clone();
 
                     client_factory
                         .create(login, passcode.as_ref())
@@ -619,8 +618,8 @@ where
 
             ClientFrame::Subscribe(frame) => {
                 self.destinations.subscribe(
-                    DestinationId(frame.destination.value().to_owned()),
-                    Some(SubscriptionId::from(frame.id.value())),
+                    DestinationId(frame.destination().value().to_owned()),
+                    Some(SubscriptionId::from(frame.id().value())),
                     Box::new(self.client_proxy.clone()),
                     &self.client,
                 );
@@ -629,7 +628,7 @@ where
 
             ClientFrame::Send(frame) => {
                 self.destinations.send(
-                    DestinationId(frame.destination.value().to_owned()),
+                    DestinationId(frame.destination().value().to_owned()),
                     InboundMessage {
                         sender_message_id: None,
                         body: frame.body().unwrap().to_owned(),
@@ -645,7 +644,7 @@ where
                 ready(Ok((ClientState::Dead, None))).boxed()
             }
             ClientFrame::Unsubscribe(frame) => {
-                self.unsubscribe(SubscriptionId(frame.id.value().to_owned()))
+                self.unsubscribe(SubscriptionId(frame.id().value().to_owned()))
             }
 
             ClientFrame::Abort(_frame) => {

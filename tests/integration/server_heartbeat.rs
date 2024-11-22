@@ -33,7 +33,7 @@ fn connect_replies_connected<'a>(
 
         assert_receive(out_receiver, |bytes| match ServerFrame::try_from(bytes) {
             Ok(ServerFrame::Connected(connected)) => {
-                let hb = connected.heartbeat.expect("Heartbeat not provided");
+                let hb = connected.heartbeat().expect("Heartbeat not provided");
                 hb.value().expected == 0 && hb.value().supplied == 5000
             }
             _ => false,
